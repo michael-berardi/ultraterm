@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="UltraTerm">
+  <rect x="6" y="6" width="88" height="88" rx="18" fill="#0a0e12"/>
+  <path d="M25 25v34c0 12.7 8.3 20 21 20h8c12.7 0 21-7.3 21-20V25H63v34c0 6.4-3.1 9-9 9h-8c-5.9 0-9-2.6-9-9V25H25Z" fill="#64f6c2"/>
+  <path d="M45 31h30v11H64v24H53V42h-8V31Z" fill="#d8e4df"/>
+  <path d="M18 18h13v3H21v10h-3V18Zm64 0v13h-3V21H69v-3h13ZM18 82V69h3v10h10v3H18Zm64 0H69v-3h10V69h3v13Z" fill="#3da981"/>
+</svg>

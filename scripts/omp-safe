@@ -1,0 +1,225 @@
+#!/usr/bin/env bash
+# omp-safe — launch Oh My Pi (omp) inside a detached-survivable tmux session.
+# Usage:
+#   omp-safe          -> starts/attaches persistent session named "omp"
+#   omp-safe new      -> starts a fresh session named "omp-<timestamp>"
+#   omp-safe ls       -> list active omp tmux sessions
+#   omp-safe kill     -> kill the persistent "omp" session
+
+set -euo pipefail
+
+resolve_executable() {
+  local configured="$1"
+  local command_name="$2"
+  local resolved=""
+
+  if [ -n "$configured" ]; then
+    resolved="$(command -v "$configured" 2>/dev/null || true)"
+  else
+    resolved="$(command -v "$command_name" 2>/dev/null || true)"
+  fi
+  if [ -n "$resolved" ] && [ -x "$resolved" ]; then
+    printf '%s' "$resolved"
+  fi
+}
+
+CONFIGURED_OMP_BIN="${OMP_BIN:-}"
+OMP_BIN="$(resolve_executable "$CONFIGURED_OMP_BIN" omp)"
+OMP_SESSION="${OMP_TMUX_SESSION:-omp}"
+OMP_PROFILE="${OMP_PROFILE:-}"
+OMP_PROFILE_ARGS=()
+if [ -n "$OMP_PROFILE" ]; then
+  OMP_PROFILE_ARGS=("--profile=$OMP_PROFILE")
+fi
+
+CONFIGURED_TMUX_BIN="${TMUX_BIN:-}"
+TMUX_BIN="$(resolve_executable "$CONFIGURED_TMUX_BIN" tmux)"
+if [ -n "$CONFIGURED_TMUX_BIN" ] && [ -z "$TMUX_BIN" ]; then
+  echo "[omp-safe] TMUX_BIN does not resolve to an executable: $CONFIGURED_TMUX_BIN" >&2
+  exit 127
+fi
+if [ -z "$TMUX_BIN" ]; then
+  for candidate in /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux; do
+    if [ -x "$candidate" ]; then
+      TMUX_BIN="$candidate"
+      break
+    fi
+  done
+fi
+
+CONFIGURED_CAFFEINATE_BIN="${CAFFEINATE_BIN:-}"
+CAFFEINATE_BIN="$(resolve_executable "$CONFIGURED_CAFFEINATE_BIN" caffeinate)"
+if [ -n "$CONFIGURED_CAFFEINATE_BIN" ] && [ -z "$CAFFEINATE_BIN" ]; then
+  echo "[omp-safe] CAFFEINATE_BIN does not resolve to an executable: $CONFIGURED_CAFFEINATE_BIN" >&2
+  exit 127
+fi
+
+omp_version() {
+  "$OMP_BIN" --version 2>/dev/null || "$OMP_BIN" version 2>/dev/null || echo "unknown"
+}
+
+hash_signature() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{print $1}'
+  else
+    cksum | awk '{print $1}'
+  fi
+}
+
+omp_signature() {
+  {
+    printf 'bin=%s\n' "$OMP_BIN"
+    printf 'version=%s\n' "$(omp_version)"
+    printf 'profile=%s\n' "${OMP_PROFILE:-<omp-default>}"
+  } | hash_signature
+}
+
+run_resilient() {
+  local exit_code=0
+  local resume=0
+
+  while true; do
+    if [ "$resume" -eq 1 ]; then
+      "$OMP_BIN" "${OMP_PROFILE_ARGS[@]}" --continue "$@" || exit_code=$?
+    else
+      "$OMP_BIN" "${OMP_PROFILE_ARGS[@]}" "$@" || exit_code=$?
+    fi
+    if [ "$exit_code" -eq 0 ]; then
+      return 0
+    fi
+
+    printf '\n[omp-safe] OMP exited unexpectedly (code %s). Restoring this session...\n' "$exit_code" >&2
+    sleep 1
+    resume=1
+    exit_code=0
+  done
+}
+
+tmux_shell_quote() {
+  local out="" arg
+  for arg in "$@"; do
+    if [ -n "$out" ]; then out="$out "; fi
+    out="$out$(printf '%q' "$arg")"
+  done
+  printf '%s' "$out"
+}
+
+if [ -z "$OMP_BIN" ]; then
+  if [ -n "$CONFIGURED_OMP_BIN" ]; then
+    echo "[omp-safe] OMP_BIN does not resolve to an executable: $CONFIGURED_OMP_BIN" >&2
+  else
+    echo "[omp-safe] OMP binary not found; install 'omp' on PATH or set OMP_BIN to its executable path" >&2
+  fi
+  exit 127
+fi
+
+case "${1:-}" in
+  ls)
+    if [ -n "$TMUX_BIN" ]; then
+      "$TMUX_BIN" ls 2>/dev/null | grep -E '^omp' || echo "no omp sessions"
+    else
+      echo "tmux not installed"
+    fi
+    exit 0
+    ;;
+  kill)
+    if [ -n "$TMUX_BIN" ]; then
+      "$TMUX_BIN" kill-session -t "$OMP_SESSION" 2>/dev/null && echo "killed $OMP_SESSION" || echo "no session $OMP_SESSION"
+    else
+      echo "tmux not installed"
+    fi
+    exit 0
+    ;;
+  new)
+    OMP_SESSION="omp-$(date +%s)"
+    shift
+    ;;
+  __worker)
+    shift
+    run_resilient "$@"
+    exit $?
+    ;;
+  signature)
+    printf 'OMP safe signature config:\n'
+    printf '  bin=%s\n' "$OMP_BIN"
+    printf '  version=%s\n' "$(omp_version)"
+    printf '  profile=%s\n' "${OMP_PROFILE:-<omp-default>}"
+    printf '  hash=%s\n' "$(omp_signature)"
+    exit 0
+    ;;
+esac
+
+if [ -z "$TMUX_BIN" ]; then
+  echo "[omp-safe] tmux not installed — falling back to bare omp" >&2
+  exec env OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-${OPENROUTER_OPENCODE_API_KEY:-}}" \
+    OPENROUTER_OPENCODE_API_KEY="${OPENROUTER_OPENCODE_API_KEY:-${OPENROUTER_API_KEY:-}}" \
+    "$OMP_BIN" "${OMP_PROFILE_ARGS[@]}" "$@"
+fi
+
+if [ -n "${TMUX:-}" ]; then
+  exec env OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-${OPENROUTER_OPENCODE_API_KEY:-}}" \
+    OPENROUTER_OPENCODE_API_KEY="${OPENROUTER_OPENCODE_API_KEY:-${OPENROUTER_API_KEY:-}}" \
+    "$OMP_BIN" "${OMP_PROFILE_ARGS[@]}" "$@"
+fi
+
+OMP_SIGNATURE="$(omp_signature)"
+OMP_VERSION="$(omp_version)"
+ULTRATERM_SCROLLBACK_LINES=5000
+
+configure_session_chrome() {
+  case "$OMP_SESSION" in
+    ultraterm-matrix-*)
+      "$TMUX_BIN" set-option -q -t "$OMP_SESSION" status off 2>/dev/null || true
+      "$TMUX_BIN" set-option -q -t "$OMP_SESSION" mouse off 2>/dev/null || true
+      "$TMUX_BIN" set-option -q -t "$OMP_SESSION" history-limit "$ULTRATERM_SCROLLBACK_LINES" 2>/dev/null || true
+      ;;
+  esac
+}
+
+create_session() {
+  local command="$1"
+  local previous_history_limit
+  local exit_code
+  previous_history_limit=$("$TMUX_BIN" show-options -gv history-limit 2>/dev/null || true)
+  previous_history_limit="${previous_history_limit:-2000}"
+  if "$TMUX_BIN" start-server \; \
+    set-option -g history-limit "$ULTRATERM_SCROLLBACK_LINES" \; \
+    new-session -d -s "$OMP_SESSION" "$command"; then
+    exit_code=0
+  else
+    exit_code=$?
+  fi
+  "$TMUX_BIN" set-option -g history-limit "$previous_history_limit" 2>/dev/null || true
+  return "$exit_code"
+}
+
+if "$TMUX_BIN" has-session -t "$OMP_SESSION" 2>/dev/null; then
+  existing_signature="$("$TMUX_BIN" show-options -qv -t "$OMP_SESSION" @omp-safe-signature 2>/dev/null || true)"
+  if [ "$existing_signature" != "$OMP_SIGNATURE" ]; then
+    echo "[omp-safe] Session '$OMP_SESSION' was created with a different OMP binary, version, or profile." >&2
+    echo "[omp-safe] Preserve it under another name or kill it before attaching with the current configuration." >&2
+    exit 78
+  fi
+  configure_session_chrome
+  exec "$TMUX_BIN" attach -t "$OMP_SESSION"
+fi
+
+worker_command=("$0" __worker "$@")
+if [ -n "$CAFFEINATE_BIN" ]; then
+  worker_command=("$CAFFEINATE_BIN" -dimsu "${worker_command[@]}")
+fi
+cmd=$(tmux_shell_quote env \
+  OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-${OPENROUTER_OPENCODE_API_KEY:-}}" \
+  OPENROUTER_OPENCODE_API_KEY="${OPENROUTER_OPENCODE_API_KEY:-${OPENROUTER_API_KEY:-}}" \
+  PATH="$PATH" \
+  OMP_BIN="$OMP_BIN" \
+  OMP_PROFILE="$OMP_PROFILE" \
+  "${worker_command[@]}")
+create_session "$cmd"
+configure_session_chrome
+"$TMUX_BIN" set-option -q -t "$OMP_SESSION" @omp-safe-signature "$OMP_SIGNATURE" 2>/dev/null || true
+"$TMUX_BIN" set-option -q -t "$OMP_SESSION" @matrix-safe-signature "$OMP_SIGNATURE" 2>/dev/null || true
+"$TMUX_BIN" set-option -q -t "$OMP_SESSION" @omp-safe-version "$OMP_VERSION" 2>/dev/null || true
+exec "$TMUX_BIN" attach -t "$OMP_SESSION"

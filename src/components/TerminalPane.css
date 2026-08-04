@@ -1,0 +1,39 @@
+@font-face {
+  font-family: "Symbols Nerd Font Mono";
+  src: url("../assets/fonts/SymbolsNerdFontMono-Regular.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Noto Sans Symbols";
+  src: url("../assets/fonts/NotoSansSymbols-Variable.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Noto Sans Symbols 2";
+  src: url("../assets/fonts/NotoSansSymbols2-Regular.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Noto Sans Math";
+  src: url("../assets/fonts/NotoSansMath-Regular.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Noto Emoji";
+  src: url("../assets/fonts/NotoEmoji-Variable.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+}

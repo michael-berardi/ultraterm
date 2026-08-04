@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# UltraTerm-owned daily cleanup coordinator.
+# Runs only allowlisted, inactivity-aware cleaners and emits an atomic JSON report.
+set -u
+
+MODE="${1:---if-due}"
+DUE_HOUR="${ULTRATERM_MAINTENANCE_HOUR:-22}"
+if ! [[ "$DUE_HOUR" =~ ^([01]?[0-9]|2[0-3])$ ]]; then
+  printf 'Invalid ULTRATERM_MAINTENANCE_HOUR: %s\n' "$DUE_HOUR" >&2
+  exit 2
+fi
+DUE_HOUR=$((10#$DUE_HOUR))
+RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STATE_DIR="${HOME}/.ultraterm"
+STAMP_FILE="${STATE_DIR}/daily-maintenance.stamp"
+REPORT_FILE="${STATE_DIR}/maintenance-report.json"
+LOCK_DIR="${STATE_DIR}/daily-maintenance.lock"
+mkdir -p "$STATE_DIR"
+
+emit_existing_or_not_due() {
+  if [[ -f "$REPORT_FILE" ]]; then
+    cat "$REPORT_FILE"
+  else
+    printf '{"schemaVersion":1,"status":"notDue","tasks":[],"reclaimedBytes":0}\n'
+  fi
+}
+
+emit_locked() {
+  printf '{"schemaVersion":1,"status":"locked","tasks":[],"reclaimedBytes":0}\n'
+}
+
+acquire_lock() {
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    printf '%s\n' "$$" > "${LOCK_DIR}/pid"
+    return 0
+  fi
+
+  local lock_mtime lock_age owner_pid
+  lock_mtime="$(stat -f '%m' "$LOCK_DIR" 2>/dev/null || echo "$now_epoch")"
+  lock_age=$(( now_epoch - lock_mtime ))
+  owner_pid="$(cat "${LOCK_DIR}/pid" 2>/dev/null || true)"
+  if [[ "$owner_pid" =~ ^[0-9]+$ ]] && kill -0 "$owner_pid" 2>/dev/null; then
+    return 1
+  fi
+  if (( lock_age < 7200 )); then
+    return 1
+  fi
+
+  rm -f "${LOCK_DIR}/pid" 2>/dev/null || return 1
+  rmdir "$LOCK_DIR" 2>/dev/null || return 1
+  mkdir "$LOCK_DIR" 2>/dev/null || return 1
+  printf '%s\n' "$$" > "${LOCK_DIR}/pid"
+}
+
+case "$MODE" in
+  --status)
+    emit_existing_or_not_due
+    exit 0
+    ;;
+  --if-due|--force) ;;
+  *)
+    printf 'Usage: %s [--if-due|--force|--status]\n' "$0" >&2
+    exit 2
+    ;;
+esac
+
+now_epoch="$(date +%s)"
+today="$(date +%F)"
+yesterday="$(date -v-1d +%F)"
+hour="$(date +%H)"
+hour=$((10#$hour))
+last_date="$(cat "$STAMP_FILE" 2>/dev/null || true)"
+
+if [[ "$MODE" != "--force" ]]; then
+  if [[ "$last_date" == "$today" ]]; then
+    emit_existing_or_not_due
+    exit 0
+  fi
+  if (( hour < DUE_HOUR )) && [[ "$last_date" == "$yesterday" ]]; then
+    emit_existing_or_not_due
+    exit 0
+  fi
+fi
+
+if ! acquire_lock; then
+  emit_locked
+  exit 0
+fi
+trap 'rm -f "${LOCK_DIR}/pid"; rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+started_at="$(date -u +%FT%TZ)"
+before_kb="$(df -k /System/Volumes/Data 2>/dev/null | awk 'NR == 2 {print $4}')"
+before_kb="${before_kb:-0}"
+
+run_helper() {
+  local helper="$1"
+  shift
+  if [[ ! -x "$helper" ]]; then
+    printf 'skipped'
+    return 0
+  fi
+  if env "$@" "$helper" >/dev/null 2>&1; then
+    printf 'completed'
+  else
+    printf 'failed'
+  fi
+}
+
+npx_status="$(run_helper "${RUNNER_DIR}/clean-stale-npx-cache.sh" NPX_CACHE_RETENTION_DAYS=7 NPX_CACHE_MIN_RECLAIM_MB=200)"
+
+after_kb="$(df -k /System/Volumes/Data 2>/dev/null | awk 'NR == 2 {print $4}')"
+after_kb="${after_kb:-0}"
+reclaimed_kb=$(( after_kb - before_kb ))
+(( reclaimed_kb >= 0 )) || reclaimed_kb=0
+reclaimed_bytes=$(( reclaimed_kb * 1024 ))
+completed_at="$(date -u +%FT%TZ)"
+
+status="completed"
+if [[ "$npx_status" != "completed" ]]; then
+  status="partialFailure"
+else
+  printf '%s\n' "$today" > "${STAMP_FILE}.tmp"
+  mv "${STAMP_FILE}.tmp" "$STAMP_FILE"
+fi
+
+report_tmp="$(mktemp "${STATE_DIR}/maintenance-report.XXXXXX")"
+printf '{"schemaVersion":1,"status":"%s","startedAt":"%s","completedAt":"%s","localDate":"%s","reclaimedBytes":%s,"tasks":[{"name":"staleNpx","status":"%s"}]}\n' \
+  "$status" "$started_at" "$completed_at" "$today" "$reclaimed_bytes" \
+  "$npx_status" > "$report_tmp"
+mv "$report_tmp" "$REPORT_FILE"
+cat "$REPORT_FILE"
