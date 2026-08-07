@@ -25,7 +25,7 @@ import type {
   TerminalOutputEvent,
   WorkspaceSession,
 } from "../types";
-import { isLaunchProfileId } from "../types";
+import { isLaunchProfileId, launchProfileFromOmpProfile } from "../types";
 
 const MAX_PENDING_OUTPUT_BYTES = 256 * 1024;
 const ACTIVITY_IDLE_DELAY_MS = 1_200;
@@ -190,7 +190,8 @@ export function useTerminalWorkspace(sessionCap: number) {
   const cleanupOrphanSlots = useCallback(async (intendedSlots: number[]): Promise<void> => {
     if (!desktopRuntime) return;
     try {
-      await cleanupOrphanTmuxSlots(intendedSlots, listPersistentSlots, removePersistentSlot);
+      const listTmuxSlots = async () => (await listPersistentSlots()).map((info) => info.slot);
+      await cleanupOrphanTmuxSlots(intendedSlots, listTmuxSlots, removePersistentSlot);
     } catch (error) {
       console.error("UltraTerm orphan tmux cleanup failed:", error);
     }
@@ -405,15 +406,18 @@ export function useTerminalWorkspace(sessionCap: number) {
       const occupiedSlots = new Set(existing.map((session) => session.slot));
       const savedRows = readTerminalLaunchRows(sessionCap);
       const persistentSlots = await listPersistentSlots();
-      const restorablePersistentSlots = persistentSlots.filter((slot) => slot <= sessionCap);
+      const restorablePersistentSlots = persistentSlots.filter((info) => info.slot <= sessionCap);
       let rowsToRestore: TerminalLaunchRow[];
-      if (savedRows !== null) {
-        rowsToRestore = savedRows;
-      } else if (restorablePersistentSlots.length > 0) {
-        rowsToRestore = restorablePersistentSlots.map((slot) => ({
-          slot,
-          launchProfile: "default" as const,
+      if (restorablePersistentSlots.length > 0) {
+        // Live tmux sessions are the source of truth: restore exactly those
+        // slots with the launch profile each session recorded, so omp-safe
+        // reattaches instead of rejecting a mismatched signature.
+        rowsToRestore = restorablePersistentSlots.map((info) => ({
+          slot: info.slot,
+          launchProfile: launchProfileFromOmpProfile(info.profile),
         }));
+      } else if (savedRows !== null) {
+        rowsToRestore = savedRows;
       } else {
         rowsToRestore = defaultTerminalSlots(targetCount, sessionCap).map((slot) => ({
           slot,

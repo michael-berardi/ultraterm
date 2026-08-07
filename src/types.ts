@@ -39,6 +39,20 @@ export function launchProfileLabel(profile: LaunchProfileId | null | undefined):
   return LAUNCH_PROFILE_OPTIONS.find((option) => option.id === profile)?.label ?? "Default";
 }
 
+export interface PersistentSlotInfo {
+  slot: number;
+  profile: string | null;
+}
+
+/**
+ * Maps the OMP profile recorded on a persistent tmux session back to a launch
+ * profile. Legacy sessions without metadata (and the default "lds" profile)
+ * restore as "default".
+ */
+export function launchProfileFromOmpProfile(profile: string | null | undefined): LaunchProfileId {
+  return isLaunchProfileId(profile) && profile !== "default" ? profile : "default";
+}
+
 export interface SessionInfo {
   id: string;
   slot: number;

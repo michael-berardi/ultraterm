@@ -16,7 +16,7 @@ mod telemetry;
 //   detach_all_sessions()
 //   close_all_sessions()
 //   list_sessions() -> SessionInfo[]
-//   list_persistent_slots() -> u32[]
+//   list_persistent_slots() -> PersistentSlotInfo[]
 //   system_metrics() -> MemorySnapshot
 //   token_telemetry() -> TokenTelemetry
 //   search_history({ query, limit? }) -> HistoryEntry[]
@@ -569,14 +569,32 @@ fn persistent_slot_from_session_name(name: &str) -> Option<u32> {
         .filter(|slot| (1..=MAX_SESSION_SLOT).contains(slot))
 }
 
-fn parse_persistent_slots(output: &[u8]) -> Vec<u32> {
-    let mut slots: Vec<u32> = String::from_utf8_lossy(output)
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistentSlotInfo {
+    pub slot: u32,
+    pub profile: Option<String>,
+}
+
+/// Parses `tmux list-sessions -F '#{session_name} #{@omp-profile}'` output,
+/// keeping each persistent slot's recorded launch profile so restoration can
+/// reattach with the matching omp-safe signature instead of assuming default.
+fn parse_persistent_slot_infos(output: &[u8]) -> Vec<PersistentSlotInfo> {
+    let mut infos: Vec<PersistentSlotInfo> = String::from_utf8_lossy(output)
         .lines()
-        .filter_map(persistent_slot_from_session_name)
+        .filter_map(|line| {
+            let (name, profile) = line.split_once(' ').unwrap_or((line, ""));
+            let slot = persistent_slot_from_session_name(name.trim())?;
+            let profile = profile.trim();
+            Some(PersistentSlotInfo {
+                slot,
+                profile: (!profile.is_empty()).then(|| profile.to_string()),
+            })
+        })
         .collect();
-    slots.sort_unstable();
-    slots.dedup();
-    slots
+    infos.sort_by_key(|info| info.slot);
+    infos.dedup_by_key(|info| info.slot);
+    infos
 }
 
 fn scroll_persistent_session(session_name: &str, lines: i32) -> Result<(), String> {
@@ -768,18 +786,18 @@ fn remove_persistent_slot(slot: u32) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn list_persistent_slots() -> Result<Vec<u32>, String> {
+fn list_persistent_slots() -> Result<Vec<PersistentSlotInfo>, String> {
     let Some(tmux_path) = telemetry::tmux_binary()? else {
         return Ok(Vec::new());
     };
     let output = process::Command::new(tmux_path)
-        .args(["list-sessions", "-F", "#{session_name}"])
+        .args(["list-sessions", "-F", "#{session_name} #{@omp-profile}"])
         .output()
         .map_err(|error| format!("Failed to inspect persistent terminals: {error}"))?;
     if !output.status.success() {
         return Ok(Vec::new());
     }
-    Ok(parse_persistent_slots(&output.stdout))
+    Ok(parse_persistent_slot_infos(&output.stdout))
 }
 
 fn build_command(
@@ -1194,8 +1212,20 @@ mod tests {
 
     #[test]
     fn parses_persistent_terminal_slots() {
-        let output = b"ultraterm-matrix-5\nother\nultraterm-matrix-2\nultraterm-matrix-5\nultraterm-matrix-0\nultraterm-matrix-9\n";
-        assert_eq!(parse_persistent_slots(output), vec![2, 5]);
+        let output = b"ultraterm-matrix-5 gpt-only\nother\nultraterm-matrix-2 \nultraterm-matrix-5 kimi-k3\nultraterm-matrix-0\nultraterm-matrix-9\n";
+        assert_eq!(
+            parse_persistent_slot_infos(output),
+            vec![
+                PersistentSlotInfo {
+                    slot: 2,
+                    profile: None
+                },
+                PersistentSlotInfo {
+                    slot: 5,
+                    profile: Some("gpt-only".to_string())
+                },
+            ]
+        );
     }
 
     #[test]

@@ -4,6 +4,7 @@ import type {
   HistoryEntry,
   MaintenanceReport,
   MemorySnapshot,
+  PersistentSlotInfo,
   ProviderCredentialInput,
   ProviderUsage,
   SessionInfo,
@@ -71,7 +72,7 @@ export function listSessions(): Promise<SessionInfo[]> {
   return invoke("list_sessions");
 }
 
-export function listPersistentSlots(): Promise<number[]> {
+export function listPersistentSlots(): Promise<PersistentSlotInfo[]> {
   return invoke("list_persistent_slots");
 }
 
