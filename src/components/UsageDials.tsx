@@ -1,16 +1,15 @@
 import type { ReactElement } from "react";
-import { Fuel, RefreshCw } from "lucide-react";
+import { Fuel, RefreshCw, Settings } from "lucide-react";
 import {
   formatResetLabel,
-  formatUpdatedAgo,
   isUsageStale,
   primaryWindow,
   usageStatusLabel,
   useProviderUsage,
 } from "../hooks/useProviderUsage";
-import type { ProviderUsage, ProviderUsageStatus } from "../types";
+import type { ProviderUsage, ProviderUsageWindow } from "../types";
 
-const DANGER_THRESHOLD = 90;
+const LOW_REMAINING_THRESHOLD = 10;
 const ARC_PATH = "M 12 54 A 38 38 0 0 1 88 54";
 
 const TICKS = [0, 25, 50, 75, 100].map((fraction) => {
@@ -27,64 +26,41 @@ const TICKS = [0, 25, 50, 75, 100].map((fraction) => {
   };
 });
 
-type DialStatus = ProviderUsageStatus | "stale";
-
-function dialFooterCopy(usage: ProviderUsage, status: DialStatus): string {
-  switch (status) {
-    case "loading":
-      return "Checking live quota";
-    case "disconnected":
-      return "No credential stored";
-    case "error":
-      return usage.error ?? "Usage unavailable";
-    case "stale":
-      return `Stale · ${formatUpdatedAgo(usage.updatedAt)}`;
-    default: {
-      const window = primaryWindow(usage);
-      return window ? formatResetLabel(window.resetsAt) : formatUpdatedAgo(usage.updatedAt);
-    }
-  }
+/** Quota dials lead with the weekly window when the provider reports one. */
+function displayWindow(usage: ProviderUsage): ProviderUsageWindow | null {
+  if (usage.windows.length === 0) return null;
+  const weekly = usage.windows.find((window) => /week|7[-\s]?day/i.test(window.label));
+  return weekly ?? primaryWindow(usage);
 }
 
-function dialAriaSummary(usage: ProviderUsage, status: DialStatus): string {
-  const window = primaryWindow(usage);
-  const parts = [`${usage.displayName} usage`, usageStatusLabel(usage, status === "stale")];
-  if (window && (status === "connected" || status === "stale")) {
-    parts.push(`${Math.round(window.usedPercent)} percent of ${window.label} used`);
-    parts.push(formatResetLabel(window.resetsAt));
-  }
-  if (status === "error" && usage.error) parts.push(usage.error);
-  return parts.join(", ");
+function remainingPercent(window: ProviderUsageWindow): number {
+  return Math.min(100, Math.max(0, 100 - window.usedPercent));
 }
 
-function UsageDial({
-  usage,
-  sectionLoading,
-  onOpenSettings,
-}: {
-  usage: ProviderUsage;
-  sectionLoading: boolean;
-  onOpenSettings?: () => void;
-}): ReactElement {
-  const status: DialStatus = sectionLoading && usage.status === "disconnected"
-    ? "loading"
-    : isUsageStale(usage)
-      ? "stale"
-      : usage.status;
-  const window = primaryWindow(usage);
-  const hasReading = (status === "connected" || status === "stale" || status === "error") && window !== null;
-  const percent = hasReading ? window.usedPercent : null;
-  const danger = percent !== null && percent >= DANGER_THRESHOLD;
+function dialAriaSummary(usage: ProviderUsage, window: ProviderUsageWindow): string {
+  return [
+    `${usage.displayName} usage`,
+    usageStatusLabel(usage, false),
+    `${Math.round(remainingPercent(window))} percent of ${window.label} remaining`,
+    formatResetLabel(window.resetsAt),
+  ].join(", ");
+}
+
+function UsageDial({ usage }: { usage: ProviderUsage }): ReactElement | null {
+  const window = displayWindow(usage);
+  if (!window) return null;
+  const remaining = remainingPercent(window);
+  const danger = remaining <= LOW_REMAINING_THRESHOLD;
   const secondaryWindows = usage.windows.filter((item) => item !== window).slice(0, 2);
   const planLine = [usage.plan, usage.balance].filter(Boolean).join(" · ");
 
   return (
-    <div className={`usage-dial usage-dial--${status}`} role="group" aria-label={dialAriaSummary(usage, status)}>
+    <div className="usage-dial usage-dial--connected" role="group" aria-label={dialAriaSummary(usage, window)}>
       <div className="usage-dial__header">
         <span className="usage-dial__name">{usage.displayName}</span>
         <span
-          className={`usage-dial__status usage-dial__status--${status}`}
-          title={usageStatusLabel(usage, status === "stale")}
+          className="usage-dial__status usage-dial__status--connected"
+          title={usageStatusLabel(usage, false)}
         />
       </div>
 
@@ -101,54 +77,49 @@ function UsageDial({
             />
           ))}
           <path className="usage-dial__track" d={ARC_PATH} pathLength={100} fill="none" />
-          {percent !== null && percent > 0 && (
+          {remaining > 0 && (
             <path
               className={`usage-dial__value${danger ? " is-danger" : ""}`}
               d={ARC_PATH}
               pathLength={100}
               fill="none"
-              strokeDasharray={`${percent} 100`}
+              strokeDasharray={`${remaining} 100`}
             />
           )}
         </svg>
         <div className="usage-dial__reading">
-          <strong className="usage-dial__percent">
-            {status === "loading" ? "··" : percent === null ? "—" : `${Math.round(percent)}%`}
-          </strong>
-          {hasReading && <span className="usage-dial__window">{window.label}</span>}
+          <strong className="usage-dial__percent">{Math.round(remaining)}%</strong>
+          <span className="usage-dial__window">{window.label} remaining</span>
         </div>
       </div>
 
-      <span
-        className={`usage-dial__footer${status === "error" ? " is-error" : ""}`}
-        title={status === "error" ? (usage.error ?? undefined) : undefined}
-      >
-        {dialFooterCopy(usage, status)}
-      </span>
+      <span className="usage-dial__footer">{formatResetLabel(window.resetsAt)}</span>
 
       {planLine && <span className="usage-dial__plan">{planLine}</span>}
 
       {secondaryWindows.length > 0 && (
         <div className="usage-dial__windows">
-          {secondaryWindows.map((item) => (
-            <div key={item.label} className="usage-dial__window-row">
-              <span className="usage-dial__window-label" title={item.label}>{item.label}</span>
-              <span className="usage-dial__mini-bar" aria-hidden="true">
+          {secondaryWindows.map((item) => {
+            const itemRemaining = remainingPercent(item);
+            return (
+              <div key={item.label} className="usage-dial__window-row">
+                <span className="usage-dial__window-label" title={item.label}>{item.label}</span>
+                <span className="usage-dial__mini-bar" aria-hidden="true">
+                  <span
+                    className={itemRemaining <= LOW_REMAINING_THRESHOLD ? "is-danger" : ""}
+                    style={{ width: `${itemRemaining}%` }}
+                  />
+                </span>
                 <span
-                  className={item.usedPercent >= DANGER_THRESHOLD ? "is-danger" : ""}
-                  style={{ width: `${item.usedPercent}%` }}
-                />
-              </span>
-              <span className="usage-dial__window-value">{Math.round(item.usedPercent)}%</span>
-            </div>
-          ))}
+                  className="usage-dial__window-value"
+                  aria-label={`${Math.round(itemRemaining)} percent of ${item.label} remaining`}
+                >
+                  {Math.round(itemRemaining)}%
+                </span>
+              </div>
+            );
+          })}
         </div>
-      )}
-
-      {status === "disconnected" && onOpenSettings && (
-        <button type="button" className="usage-dial__connect" onClick={onOpenSettings}>
-          Connect in settings
-        </button>
       )}
     </div>
   );
@@ -156,6 +127,32 @@ function UsageDial({
 
 export function UsageDials({ onOpenSettings }: { onOpenSettings?: () => void }): ReactElement {
   const { usages, loading, refreshing, error, refresh } = useProviderUsage();
+  const connected = usages.filter(
+    (usage) => usage.status === "connected" && !isUsageStale(usage) && displayWindow(usage) !== null,
+  );
+
+  let usageContent: ReactElement;
+  if (loading && connected.length === 0) {
+    usageContent = <p className="usage-empty">Checking provider quota…</p>;
+  } else if (connected.length === 0) {
+    usageContent = (
+      <button type="button" className="usage-configure" onClick={onOpenSettings}>
+        <Settings size={12} />
+        <span>
+          <strong>No live provider stats</strong>
+          <small>Configure provider stats</small>
+        </span>
+      </button>
+    );
+  } else {
+    usageContent = (
+      <div className="usage-dials">
+        {connected.map((usage) => (
+          <UsageDial key={usage.provider} usage={usage} />
+        ))}
+      </div>
+    );
+  }
 
   return (
     <section className="sidebar-section sidebar-section--usage" aria-labelledby="usage-heading">
@@ -179,16 +176,7 @@ export function UsageDials({ onOpenSettings }: { onOpenSettings?: () => void }):
         </p>
       )}
 
-      <div className="usage-dials">
-        {usages.map((usage) => (
-          <UsageDial
-            key={usage.provider}
-            usage={usage}
-            sectionLoading={loading}
-            onOpenSettings={onOpenSettings}
-          />
-        ))}
-      </div>
+      {usageContent}
     </section>
   );
 }

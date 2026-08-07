@@ -1,47 +1,134 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { createPortal } from "react-dom";
-import { Clock3, Folder, History, Search, X } from "lucide-react";
-import { searchHistory } from "../lib/terminalApi";
-import type { HistoryEntry, ThemeId } from "../types";
+import { ChartColumn, X } from "lucide-react";
+import type { ThemeId, TokenCounts, TokenTelemetry } from "../types";
 
 interface HistoryModalProps {
   open: boolean;
   theme: ThemeId;
+  telemetry: TokenTelemetry;
   onClose: () => void;
 }
 
-const dateFormatter = new Intl.DateTimeFormat(undefined, {
-  dateStyle: "medium",
-  timeStyle: "short",
+type HistoryRange = "7d" | "30d" | "all";
+
+const RANGE_OPTIONS: ReadonlyArray<{ id: HistoryRange; label: string; days: number | null }> = [
+  { id: "7d", label: "7 days", days: 7 },
+  { id: "30d", label: "30 days", days: 30 },
+  { id: "all", label: "All", days: null },
+];
+
+/** Chromatic color is reserved for chart semantics; models repeat it in legend, bars, and table. */
+const MODEL_PALETTE = [
+  "#7aa2f7",
+  "#9ece6a",
+  "#bb9af7",
+  "#e0af68",
+  "#f7768e",
+  "#7dcfff",
+  "#ff9e64",
+  "#b4f9f8",
+];
+
+const CHART_WIDTH = 720;
+const CHART_HEIGHT = 260;
+const CHART_PAD = { top: 12, right: 10, bottom: 28, left: 48 };
+
+const dayLabelFormatter = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+});
+const dayFullFormatter = new Intl.DateTimeFormat(undefined, {
+  weekday: "short",
+  month: "short",
+  day: "numeric",
 });
 
-function formatDate(epochSeconds: number): string {
-  return dateFormatter.format(new Date(epochSeconds * 1_000));
+/** History dates are local calendar days in YYYY-MM-DD form; parse them as local dates. */
+function parseHistoryDate(date: string): Date {
+  const [year, month, day] = date.split("-").map(Number);
+  return new Date(year ?? 1970, (month ?? 1) - 1, day ?? 1);
 }
 
-function formatDirectory(cwd: string | null): string {
-  if (!cwd) return "Unknown directory";
-  const segments = cwd.split("/").filter(Boolean);
-  return segments[segments.length - 1] ?? cwd;
+function formatCompact(value: number): string {
+  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)}B`;
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
+  return value.toLocaleString();
 }
 
-export function HistoryModal({ open, theme, onClose }: HistoryModalProps) {
-  const [query, setQuery] = useState("");
-  const [entries, setEntries] = useState<HistoryEntry[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+function emptyCounts(): TokenCounts {
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+}
+
+function addCounts(target: TokenCounts, source: TokenCounts): void {
+  target.input += source.input;
+  target.output += source.output;
+  target.cacheRead += source.cacheRead;
+  target.cacheWrite += source.cacheWrite;
+  target.total += source.total;
+}
+
+interface ModelSeries {
+  model: string;
+  color: string;
+  totals: TokenCounts;
+}
+
+export function HistoryModal({
+  open,
+  theme,
+  telemetry,
+  onClose,
+}: HistoryModalProps): ReactElement | null {
+  const [range, setRange] = useState<HistoryRange>("7d");
   const modalRef = useRef<HTMLElement>(null);
-  const searchRef = useRef<HTMLInputElement>(null);
+  const initialFocusRef = useRef<HTMLButtonElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+
+  const days = useMemo(() => {
+    const sorted = [...telemetry.history].sort((left, right) => left.date.localeCompare(right.date));
+    const option = RANGE_OPTIONS.find((candidate) => candidate.id === range);
+    if (!option || option.days === null) return sorted;
+    const cutoff = new Date();
+    cutoff.setHours(0, 0, 0, 0);
+    cutoff.setDate(cutoff.getDate() - (option.days - 1));
+    return sorted.filter((day) => parseHistoryDate(day.date) >= cutoff);
+  }, [range, telemetry.history]);
+
+  const models = useMemo<ModelSeries[]>(() => {
+    const byModel = new Map<string, TokenCounts>();
+    for (const day of days) {
+      for (const entry of day.models) {
+        const totals = byModel.get(entry.model) ?? emptyCounts();
+        addCounts(totals, entry.usage);
+        byModel.set(entry.model, totals);
+      }
+    }
+    return Array.from(byModel, ([model, totals]) => ({ model, totals, color: "" }))
+      .sort((left, right) => right.totals.total - left.totals.total)
+      .map((entry, index) => ({ ...entry, color: MODEL_PALETTE[index % MODEL_PALETTE.length] }));
+  }, [days]);
+
+  const totals = useMemo<TokenCounts>(() => {
+    const aggregate = emptyCounts();
+    for (const day of days) addCounts(aggregate, day.usage);
+    return aggregate;
+  }, [days]);
+
+  const colorByModel = useMemo(
+    () => new Map(models.map((entry) => [entry.model, entry.color])),
+    [models],
+  );
 
   useEffect(() => {
     if (!open) return;
     previousFocusRef.current = document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null;
-    const focusFrame = requestAnimationFrame(() => searchRef.current?.focus());
+    const focusFrame = requestAnimationFrame(() => initialFocusRef.current?.focus());
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         onCloseRef.current();
@@ -77,46 +164,18 @@ export function HistoryModal({ open, theme, onClose }: HistoryModalProps) {
     };
   }, [open]);
 
-  useEffect(() => {
-    if (!open) return;
-    let active = true;
-    const timer = window.setTimeout(() => {
-      setLoading(true);
-      setError(null);
-      void searchHistory(query)
-        .then((results) => {
-          if (active) setEntries(results);
-        })
-        .catch((searchError: unknown) => {
-          if (active) {
-            setEntries([]);
-            setError(searchError instanceof Error ? searchError.message : String(searchError));
-          }
-        })
-        .finally(() => {
-          if (active) setLoading(false);
-        });
-    }, query ? 180 : 0);
-
-    return () => {
-      active = false;
-      window.clearTimeout(timer);
-    };
-  }, [open, query]);
-
   if (!open) return null;
 
+  const chartInnerWidth = CHART_WIDTH - CHART_PAD.left - CHART_PAD.right;
+  const chartInnerHeight = CHART_HEIGHT - CHART_PAD.top - CHART_PAD.bottom;
+  const baseline = CHART_PAD.top + chartInnerHeight;
+  const maxDayTotal = Math.max(1, ...days.map((day) => day.usage.total));
+  const barSlot = days.length > 0 ? chartInnerWidth / days.length : chartInnerWidth;
+  const barWidth = Math.max(3, Math.min(30, barSlot * 0.62));
+  const tickLabelEvery = Math.max(1, Math.ceil(days.length / 8));
+
   return createPortal(
-    <div
-      className="settings-overlay"
-      data-theme={theme}
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target !== event.currentTarget) return;
-        event.preventDefault();
-        onClose();
-      }}
-    >
+    <div className="settings-overlay" data-theme={theme} role="presentation">
       <section
         className="history-modal"
         ref={modalRef}
@@ -127,70 +186,194 @@ export function HistoryModal({ open, theme, onClose }: HistoryModalProps) {
         <div className="settings-modal__material" aria-hidden="true" />
         <header className="history-modal__header">
           <div>
-            <h2 id="history-title"><History size={17} /> OMP history</h2>
-            <p>Search prompts across prior sessions</p>
+            <h2 id="history-title"><ChartColumn size={17} /> Token history</h2>
+            <p>Daily OMP token usage split by model</p>
           </div>
-          <button type="button" aria-label="Close history" onClick={onClose}>
+          <button type="button" aria-label="Close token history" onClick={onClose}>
             <X size={16} />
           </button>
         </header>
 
-        <div className="history-modal__search">
-          <Search size={15} aria-hidden="true" />
-          <input
-            ref={searchRef}
-            type="search"
-            value={query}
-            maxLength={256}
-            placeholder="Search prompt history"
-            aria-label="Search OMP prompt history"
-            onChange={(event) => setQuery(event.target.value)}
-          />
-          {query && (
-            <button type="button" onClick={() => setQuery("")} aria-label="Clear history search">
-              <X size={13} />
-            </button>
-          )}
-        </div>
-
-        <div className="history-modal__status" aria-live="polite">
-          <span>{loading ? "Searching…" : `${entries.length} ${entries.length === 1 ? "result" : "results"}`}</span>
-          <small>Read-only · 20 result limit</small>
-        </div>
-
-        <div className="history-modal__results">
-          {error ? (
-            <div className="history-modal__empty" role="alert">
-              <strong>History unavailable</strong>
-              <span>{error}</span>
-            </div>
-          ) : !loading && entries.length === 0 ? (
-            <div className="history-modal__empty">
-              <Search size={18} />
-              <strong>No matching prompts</strong>
-              <span>Try fewer or broader terms.</span>
-            </div>
-          ) : (
-            <ol>
-              {entries.map((entry) => (
-                <li key={entry.id}>
-                  <article className="history-entry">
-                    <div className="history-entry__meta">
-                      <time dateTime={new Date(entry.createdAt * 1_000).toISOString()}>
-                        <Clock3 size={11} /> {formatDate(entry.createdAt)}
-                      </time>
-                      <span title={entry.cwd ?? undefined}>
-                        <Folder size={11} /> {formatDirectory(entry.cwd)}
-                      </span>
-                    </div>
-                    <p>{entry.prompt}{entry.truncated ? "…" : ""}</p>
-                    {entry.sessionId && <small>Session {entry.sessionId.slice(0, 8)}</small>}
-                  </article>
+        <div className="history-modal__toolbar">
+          <div className="history-range" role="group" aria-label="History range">
+            {RANGE_OPTIONS.map((option, index) => (
+              <button
+                key={option.id}
+                type="button"
+                ref={index === 0 ? initialFocusRef : undefined}
+                className={range === option.id ? "is-active" : ""}
+                aria-pressed={range === option.id}
+                onClick={() => setRange(option.id)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          {models.length > 0 && (
+            <ul className="history-legend" aria-label="Models">
+              {models.map((entry) => (
+                <li key={entry.model}>
+                  <i style={{ background: entry.color }} aria-hidden="true" />
+                  <span>{entry.model}</span>
+                  <strong>{entry.totals.total.toLocaleString()}</strong>
                 </li>
               ))}
-            </ol>
+            </ul>
           )}
         </div>
+
+        {days.length === 0 ? (
+          <div className="history-modal__empty">
+            <ChartColumn size={18} />
+            <strong>No token activity in this window</strong>
+            <span>Usage appears here once UltraTerm has indexed transcript telemetry for these days.</span>
+          </div>
+        ) : (
+          <>
+            <dl className="history-summary" aria-label="Totals for selected range">
+              <div>
+                <dt>Total</dt>
+                <dd>{totals.total.toLocaleString()}</dd>
+              </div>
+              <div>
+                <dt>Input</dt>
+                <dd>{totals.input.toLocaleString()}</dd>
+              </div>
+              <div>
+                <dt>Output</dt>
+                <dd>{totals.output.toLocaleString()}</dd>
+              </div>
+              <div>
+                <dt>Cache read</dt>
+                <dd>{totals.cacheRead.toLocaleString()}</dd>
+              </div>
+              <div>
+                <dt>Cache write</dt>
+                <dd>{totals.cacheWrite.toLocaleString()}</dd>
+              </div>
+            </dl>
+
+            <div
+              className="history-chart"
+              role="img"
+              aria-label={`Stacked daily token usage for ${days.length} days, peaking at ${maxDayTotal.toLocaleString()} tokens`}
+            >
+              <svg
+                viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
+                preserveAspectRatio="none"
+                aria-hidden="true"
+                focusable="false"
+              >
+                {[0.25, 0.5, 0.75, 1].map((fraction) => {
+                  const y = baseline - chartInnerHeight * fraction;
+                  return (
+                    <g key={fraction}>
+                      <line
+                        className="history-chart__gridline"
+                        x1={CHART_PAD.left}
+                        y1={y}
+                        x2={CHART_WIDTH - CHART_PAD.right}
+                        y2={y}
+                      />
+                      <text className="history-chart__tick" x={CHART_PAD.left - 6} y={y + 3}>
+                        {formatCompact(Math.round(maxDayTotal * fraction))}
+                      </text>
+                    </g>
+                  );
+                })}
+                <line
+                  className="history-chart__baseline"
+                  x1={CHART_PAD.left}
+                  y1={baseline}
+                  x2={CHART_WIDTH - CHART_PAD.right}
+                  y2={baseline}
+                />
+                {days.map((day, dayIndex) => {
+                  const x = CHART_PAD.left + dayIndex * barSlot + (barSlot - barWidth) / 2;
+                  let stack = 0;
+                  return (
+                    <g key={day.date}>
+                      {models.map((entry) => {
+                        const modelDay = day.models.find((item) => item.model === entry.model);
+                        const value = modelDay?.usage.total ?? 0;
+                        if (value <= 0) return null;
+                        const height = (value / maxDayTotal) * chartInnerHeight;
+                        const y = baseline - stack - height;
+                        stack += height;
+                        return (
+                          <rect
+                            key={entry.model}
+                            className="history-chart__bar"
+                            x={x}
+                            y={y}
+                            width={barWidth}
+                            height={height}
+                            fill={entry.color}
+                          />
+                        );
+                      })}
+                      {dayIndex % tickLabelEvery === 0 && (
+                        <text
+                          className="history-chart__tick history-chart__tick--date"
+                          x={x + barWidth / 2}
+                          y={CHART_HEIGHT - 8}
+                        >
+                          {dayLabelFormatter.format(parseHistoryDate(day.date))}
+                        </text>
+                      )}
+                    </g>
+                  );
+                })}
+              </svg>
+            </div>
+
+            <div className="history-table-wrap">
+              <table className="history-table">
+                <caption>
+                  Exact daily token usage by model for the selected range
+                </caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Date</th>
+                    <th scope="col">Models</th>
+                    <th scope="col">Input</th>
+                    <th scope="col">Output</th>
+                    <th scope="col">Cached</th>
+                    <th scope="col">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...days].reverse().map((day) => (
+                    <tr key={day.date}>
+                      <th scope="row">
+                        <time dateTime={day.date}>
+                          {dayFullFormatter.format(parseHistoryDate(day.date))}
+                        </time>
+                      </th>
+                      <td>
+                        <ul>
+                          {day.models.map((entry) => (
+                            <li key={entry.model}>
+                              <i
+                                style={{ background: colorByModel.get(entry.model) ?? "var(--text-faint)" }}
+                                aria-hidden="true"
+                              />
+                              {entry.model} · {entry.usage.total.toLocaleString()}
+                            </li>
+                          ))}
+                        </ul>
+                      </td>
+                      <td>{day.usage.input.toLocaleString()}</td>
+                      <td>{day.usage.output.toLocaleString()}</td>
+                      <td>{(day.usage.cacheRead + day.usage.cacheWrite).toLocaleString()}</td>
+                      <td>{day.usage.total.toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
       </section>
     </div>,
     document.body,

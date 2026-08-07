@@ -178,6 +178,10 @@ configure_session_chrome() {
   esac
 }
 
+persist_session_profile() {
+  "$TMUX_BIN" set-option -q -t "$OMP_SESSION" @omp-profile "$OMP_PROFILE" 2>/dev/null || true
+}
+
 create_session() {
   local command="$1"
   local previous_history_limit
@@ -203,6 +207,7 @@ if "$TMUX_BIN" has-session -t "$OMP_SESSION" 2>/dev/null; then
     exit 78
   fi
   configure_session_chrome
+  persist_session_profile
   exec "$TMUX_BIN" attach -t "$OMP_SESSION"
 fi
 
@@ -222,4 +227,5 @@ configure_session_chrome
 "$TMUX_BIN" set-option -q -t "$OMP_SESSION" @omp-safe-signature "$OMP_SIGNATURE" 2>/dev/null || true
 "$TMUX_BIN" set-option -q -t "$OMP_SESSION" @matrix-safe-signature "$OMP_SIGNATURE" 2>/dev/null || true
 "$TMUX_BIN" set-option -q -t "$OMP_SESSION" @omp-safe-version "$OMP_VERSION" 2>/dev/null || true
+persist_session_profile
 exec "$TMUX_BIN" attach -t "$OMP_SESSION"

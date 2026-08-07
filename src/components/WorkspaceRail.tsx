@@ -1,14 +1,16 @@
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactElement } from "react";
 import { createPortal } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Activity,
-  Bot,
+  Check,
+  ChevronDown,
   CircleOff,
   Cpu,
   Gauge,
   Gamepad2,
   HardDrive,
+  History,
   LogOut,
   Mic,
   Maximize2,
@@ -16,22 +18,24 @@ import {
   Settings,
   Plus,
   RotateCcw,
-  Sparkles,
   TerminalSquare,
   X,
 } from "lucide-react";
+import { HistoryModal } from "./HistoryModal";
 import { SettingsModal, type SettingsSection } from "./SettingsModal";
 import { UsageDials } from "./UsageDials";
-import type {
-  EffectMode,
-  MemorySnapshot,
-  ThemeId,
-  TerminalPreferences,
-  TokenTelemetry,
-  VoiceInputState,
-  WorkspaceSession,
+import {
+  LAUNCH_PROFILE_OPTIONS,
+  launchProfileLabel,
+  type EffectMode,
+  type LaunchProfileId,
+  type MemorySnapshot,
+  type ThemeId,
+  type TerminalPreferences,
+  type TokenTelemetry,
+  type VoiceInputState,
+  type WorkspaceSession,
 } from "../types";
-
 
 interface WorkspaceRailProps {
   sessions: WorkspaceSession[];
@@ -40,6 +44,7 @@ interface WorkspaceRailProps {
   maximizedId: string | null;
   metrics: MemorySnapshot;
   telemetry: TokenTelemetry;
+  launchProfile: LaunchProfileId;
   isBooting: boolean;
   theme: ThemeId;
   effectMode: EffectMode;
@@ -49,7 +54,7 @@ interface WorkspaceRailProps {
   controllerName: string | null;
   controllerVoiceState: VoiceInputState;
   onSelect: (id: string, extendSelection: boolean) => void;
-  onAddTerminal: () => void;
+  onAddTerminal: (profile?: LaunchProfileId) => void;
   onToggleMaximize: (id: string) => void;
   onRestart: (id: string) => void;
   onCloseSelected: () => void;
@@ -60,13 +65,6 @@ interface WorkspaceRailProps {
   onEffectModeChange: (mode: EffectMode) => void;
   onTerminalPreferencesChange: (preferences: TerminalPreferences) => void;
   onDismissNotice: () => void;
-}
-
-function formatTokens(value: number): string {
-  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)}B`;
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
-  return value.toLocaleString();
 }
 
 function formatModel(model: string | null | undefined): string {
@@ -88,24 +86,50 @@ function controllerVoiceMessage(state: VoiceInputState): string {
   }
 }
 
-function IncreasingTokenValue({ value, title }: { value: number; title: string }): ReactElement {
-  const previousValue = useRef(value);
+const COUNT_UP_DURATION_MS = 620;
+
+/**
+ * Exact, locale-formatted token count that interpolates toward new values.
+ * Interpolation is skipped entirely under reduced motion.
+ */
+function CountUpTokens({ value }: { value: number }): ReactElement {
+  const [displayed, setDisplayed] = useState(value);
+  const displayedRef = useRef(value);
   const [increasing, setIncreasing] = useState(false);
 
   useEffect(() => {
-    if (value <= previousValue.current) {
-      previousValue.current = value;
+    const from = displayedRef.current;
+    if (from === value) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      displayedRef.current = value;
+      setDisplayed(value);
       return;
     }
-    previousValue.current = value;
     setIncreasing(true);
-    const timer = window.setTimeout(() => setIncreasing(false), 440);
-    return () => window.clearTimeout(timer);
+    const flashTimer = window.setTimeout(() => setIncreasing(false), 440);
+    const start = performance.now();
+    let frame = 0;
+    const tick = (now: number) => {
+      const progress = Math.min(1, (now - start) / COUNT_UP_DURATION_MS);
+      const eased = 1 - (1 - progress) ** 4;
+      const current = Math.round(from + (value - from) * eased);
+      displayedRef.current = current;
+      setDisplayed(current);
+      if (progress < 1) frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.clearTimeout(flashTimer);
+    };
   }, [value]);
 
   return (
-    <strong className={increasing ? "is-increasing" : ""} title={title}>
-      {formatTokens(value)}
+    <strong
+      className={`token-today__value${increasing ? " is-increasing" : ""}`}
+      title={`${value.toLocaleString()} tokens today`}
+    >
+      {displayed.toLocaleString()}
     </strong>
   );
 }
@@ -117,6 +141,7 @@ export function WorkspaceRail({
   maximizedId,
   metrics,
   telemetry,
+  launchProfile,
   isBooting,
   theme,
   effectMode,
@@ -140,8 +165,12 @@ export function WorkspaceRail({
 }: WorkspaceRailProps): ReactElement {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection | undefined>(undefined);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [profileMenu, setProfileMenu] = useState<{ x: number; y: number } | null>(null);
   const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
+  const profileMenuRef = useRef<HTMLDivElement>(null);
+  const profileToggleRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (!contextMenu) return;
     const closeOnOutside = (event: PointerEvent) => {
@@ -162,7 +191,71 @@ export function WorkspaceRail({
     setContextMenu(null);
     action();
   };
+
+  const openProfileMenu = () => {
+    const anchor = profileToggleRef.current?.getBoundingClientRect();
+    if (!anchor) return;
+    setProfileMenu({
+      x: Math.min(anchor.right - 188, window.innerWidth - 196),
+      y: anchor.bottom + 6,
+    });
+  };
+
+  useEffect(() => {
+    if (!profileMenu) return;
+    const closeOnOutside = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (profileMenuRef.current?.contains(target)) return;
+      if (profileToggleRef.current?.contains(target)) return;
+      setProfileMenu(null);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      setProfileMenu(null);
+      profileToggleRef.current?.focus();
+    };
+    const focusFrame = requestAnimationFrame(() => {
+      const items = profileMenuRef.current?.querySelectorAll<HTMLElement>("[role='menuitemradio']");
+      const current = profileMenuRef.current?.querySelector<HTMLElement>("[aria-checked='true']");
+      (current ?? items?.[0])?.focus();
+    });
+    window.addEventListener("pointerdown", closeOnOutside);
+    window.addEventListener("keydown", closeOnEscape, true);
+    return () => {
+      cancelAnimationFrame(focusFrame);
+      window.removeEventListener("pointerdown", closeOnOutside);
+      window.removeEventListener("keydown", closeOnEscape, true);
+    };
+  }, [profileMenu]);
+
+  const onProfileMenuKeyDown = (event: ReactKeyboardEvent) => {
+    const items = Array.from(
+      profileMenuRef.current?.querySelectorAll<HTMLElement>("[role='menuitemradio']") ?? [],
+    );
+    if (items.length === 0) return;
+    const index = items.findIndex((item) => item === document.activeElement);
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowDown") nextIndex = (index + 1) % items.length;
+    else if (event.key === "ArrowUp") nextIndex = (index - 1 + items.length) % items.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = items.length - 1;
+    else if (event.key === "Tab") {
+      setProfileMenu(null);
+      return;
+    }
+    if (nextIndex !== null) {
+      event.preventDefault();
+      items[nextIndex]?.focus();
+    }
+  };
+
+  const launchWithProfile = (profile: LaunchProfileId) => {
+    setProfileMenu(null);
+    onAddTerminal(profile);
+  };
   const totalMemory = metrics.appMemoryMib + metrics.terminalMemoryMib;
+  const launchProfileName = launchProfileLabel(launchProfile);
   const activeSession = activeId
     ? sessions.find((session) => session.id === activeId)
     : null;
@@ -269,17 +362,33 @@ export function WorkspaceRail({
                 >
                   <Settings size={13} />
                 </button>
-                <button
-                  type="button"
-                  className="glass-icon-button glass-icon-button--labeled"
-                  onClick={onAddTerminal}
-                  disabled={isBooting || sessions.length >= metrics.maxSessions}
-                  aria-label="New terminal"
-                  title="New terminal · ⌘T"
-                >
-                  <Plus size={13} />
-                  <span>New terminal</span>
-                </button>
+                <div className="terminal-launch">
+                  <button
+                    type="button"
+                    className="glass-icon-button glass-icon-button--labeled terminal-launch__primary"
+                    onClick={() => onAddTerminal()}
+                    disabled={isBooting || sessions.length >= metrics.maxSessions}
+                    aria-label={`New terminal with ${launchProfileName} profile`}
+                    title={`New terminal · ⌘T · ${launchProfileName} profile`}
+                  >
+                    <Plus size={13} />
+                    <span>New terminal</span>
+                    <small>{launchProfileName}</small>
+                  </button>
+                  <button
+                    type="button"
+                    ref={profileToggleRef}
+                    className="glass-icon-button terminal-launch__toggle"
+                    onClick={() => (profileMenu ? setProfileMenu(null) : openProfileMenu())}
+                    disabled={isBooting || sessions.length >= metrics.maxSessions}
+                    aria-haspopup="menu"
+                    aria-expanded={profileMenu !== null}
+                    aria-label="Choose launch profile"
+                    title="Choose launch profile"
+                  >
+                    <ChevronDown size={12} />
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -292,9 +401,9 @@ export function WorkspaceRail({
               ) : (
                 sessions.map((session) => {
                   const tokens = telemetry.terminals.find((item) => item.slot === session.slot);
-                  const agentCount = tokens?.activeSubagents ?? 0;
+                  const profileName = launchProfileLabel(session.launchProfile);
                   const stateDetail = session.status === "live"
-                    ? `${formatModel(tokens?.model)} · ${session.activity}${agentCount > 0 ? ` · ${agentCount} ${agentCount === 1 ? "agent" : "agents"}` : ""}`
+                    ? `${formatModel(tokens?.model)} · ${session.activity}`
                     : session.status;
                   return (
                     <button
@@ -321,7 +430,9 @@ export function WorkspaceRail({
                         <small title={tokens?.model ?? "OMP model pending"}>{stateDetail}</small>
                       </span>
                       <span className="terminal-list__meta">
-                        <small>{formatTokens(tokens?.usage.total ?? 0)}</small>
+                        <small title={`Launch profile: ${profileName}`}>
+                          {profileName}
+                        </small>
                         <kbd>⌘{session.slot}</kbd>
                       </span>
                     </button>
@@ -383,65 +494,24 @@ export function WorkspaceRail({
             )}
           </section>
 
-
           <section className="sidebar-section sidebar-section--telemetry" aria-labelledby="telemetry-heading">
             <div className="sidebar-section__heading">
               <span id="telemetry-heading"><Gauge size={13} /> Token telemetry</span>
               <small>{metrics.sessionCount} live</small>
             </div>
 
-            <div className="token-summary">
-              <div>
-                <span>Past 24hr</span>
-                <IncreasingTokenValue
-                  value={telemetry.past24Hours.total}
-                  title={`${formatTokens(telemetry.past24Hours.cacheRead)} cached context tokens reused`}
-                />
-              </div>
-              <div>
-                <span>Past 7d</span>
-                <IncreasingTokenValue
-                  value={telemetry.past7Days.total}
-                  title={`${formatTokens(telemetry.past7Days.cacheRead)} cached context tokens reused`}
-                />
-              </div>
-              <div>
-                <span>All time</span>
-                <IncreasingTokenValue
-                  value={telemetry.allTime.total}
-                  title={`${formatTokens(telemetry.allTime.cacheRead)} cached context tokens reused`}
-                />
-              </div>
-            </div>
-
-            <div className="token-terminals">
-              {telemetry.terminals.filter((terminal) => sessions.some((session) => session.slot === terminal.slot)).map((terminal) => (
-                <div key={terminal.slot}>
-                  <span>Terminal {terminal.slot}</span>
-                  <span>
-                    {terminal.activeSubagents > 0 && <i aria-label={`${terminal.activeSubagents} active sub-agents`} />}
-                    {formatTokens(terminal.usage.total)}
-                  </span>
-                </div>
-              ))}
-            </div>
-
-            <div className="agent-glance" aria-label="Sub-agent and delegation activity">
-              <div className={telemetry.activeSubagents > 0 ? "is-live" : ""}>
-                <Activity size={12} />
-                <span>Active</span>
-                <strong>{telemetry.activeSubagents}</strong>
-              </div>
-              <div>
-                <Bot size={12} />
-                <span>Finished</span>
-                <strong>{telemetry.inactiveSubagents}</strong>
-              </div>
-              <div>
-                <Sparkles size={12} />
-                <span>Records</span>
-                <strong>{telemetry.activeSubagents + telemetry.inactiveSubagents}</strong>
-              </div>
+            <div className="token-today">
+              <span className="token-today__label">Today</span>
+              <CountUpTokens value={telemetry.today.total} />
+              <button
+                type="button"
+                className="token-today__history"
+                onClick={() => setHistoryOpen(true)}
+                aria-label="View full token usage history"
+              >
+                <History size={11} />
+                <span>View history</span>
+              </button>
             </div>
           </section>
 
@@ -473,6 +543,34 @@ export function WorkspaceRail({
           </dl>
         </footer>
       </aside>
+      {profileMenu && createPortal(
+        <div
+          ref={profileMenuRef}
+          className="terminal-context-menu terminal-context-menu--profiles"
+          role="menu"
+          aria-label="Launch profile"
+          style={{ left: profileMenu.x, top: profileMenu.y }}
+          onKeyDown={onProfileMenuKeyDown}
+        >
+          <strong>Launch profile</strong>
+          {LAUNCH_PROFILE_OPTIONS.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              role="menuitemradio"
+              aria-checked={launchProfile === option.id}
+              title={option.description}
+              onClick={() => launchWithProfile(option.id)}
+            >
+              <span className="terminal-context-menu__check" aria-hidden="true">
+                {launchProfile === option.id && <Check size={12} />}
+              </span>
+              {option.label}
+            </button>
+          ))}
+        </div>,
+        document.body,
+      )}
       {contextMenu && createPortal(
         <div
           ref={contextMenuRef}
@@ -500,6 +598,13 @@ export function WorkspaceRail({
         </div>,
         document.body,
       )}
+
+      <HistoryModal
+        open={historyOpen}
+        theme={theme}
+        telemetry={telemetry}
+        onClose={() => setHistoryOpen(false)}
+      />
 
       <SettingsModal
         open={settingsOpen}

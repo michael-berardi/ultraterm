@@ -7,7 +7,7 @@ mod telemetry;
 // UltraTerm Rust backend — single-window Tauri 2 workspace with multiple PTY sessions.
 //
 // Commands:
-//   create_session({ request: { slot, cols, rows, workingDirectory?, launchOmp? } }) -> SessionInfo
+//   create_session({ request: { slot, cols, rows, workingDirectory?, launchOmp?, launchProfile? } }) -> SessionInfo
 //   write_to_session({ id, data }) where data is base64
 //   resize_session({ id, cols, rows })
 //   detach_session({ id })
@@ -50,6 +50,28 @@ const MAX_ROWS: u32 = 512;
 const MAX_SESSION_SLOT: u32 = 8;
 const DEFAULT_COMMAND_SEARCH_PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin";
 
+#[derive(Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum LaunchProfile {
+    #[default]
+    Default,
+    GptOnly,
+    KimiK3,
+}
+
+impl LaunchProfile {
+    fn omp_profile_override(self, inherited_profile: Option<&OsStr>) -> Option<&'static str> {
+        match self {
+            Self::Default => match inherited_profile {
+                Some(profile) if !profile.is_empty() => None,
+                _ => Some("lds"),
+            },
+            Self::GptOnly => Some("gpt-only"),
+            Self::KimiK3 => Some("kimi-k3"),
+        }
+    }
+}
+
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionInfo {
@@ -58,6 +80,7 @@ pub struct SessionInfo {
     pub title: String,
     pub pid: u32,
     pub launched_omp: bool,
+    pub launch_profile: LaunchProfile,
 }
 
 #[derive(Serialize, Clone)]
@@ -90,6 +113,8 @@ struct CreateSessionRequest {
     rows: u32,
     working_directory: Option<String>,
     launch_omp: Option<bool>,
+    #[serde(default)]
+    launch_profile: LaunchProfile,
 }
 
 struct Session {
@@ -98,6 +123,7 @@ struct Session {
     title: String,
     pid: Option<u32>,
     launched_omp: bool,
+    launch_profile: LaunchProfile,
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
@@ -183,8 +209,9 @@ impl SessionManager {
 
         let working_directory = resolve_working_directory(request.working_directory)?;
         let launch_omp = request.launch_omp.unwrap_or(false);
+        let launch_profile = request.launch_profile;
         let (cmd, title, launched_omp) =
-            build_command(request.slot, launch_omp, &working_directory)?;
+            build_command(request.slot, launch_omp, launch_profile, &working_directory)?;
 
         let pty_system = native_pty_system();
         let pair = pty_system
@@ -223,6 +250,7 @@ impl SessionManager {
             title,
             pid,
             launched_omp,
+            launch_profile,
             master: pair.master,
             writer,
             child,
@@ -249,6 +277,7 @@ impl SessionManager {
             title: s.title.clone(),
             pid: s.pid.unwrap_or(0),
             launched_omp: s.launched_omp,
+            launch_profile: s.launch_profile,
         })
     }
 
@@ -351,6 +380,7 @@ impl SessionManager {
                 title: s.title.clone(),
                 pid: s.pid.unwrap_or(0),
                 launched_omp: s.launched_omp,
+                launch_profile: s.launch_profile,
             })
             .collect()
     }
@@ -755,6 +785,7 @@ fn list_persistent_slots() -> Result<Vec<u32>, String> {
 fn build_command(
     slot: u32,
     launch_omp: bool,
+    launch_profile: LaunchProfile,
     working_directory: &Path,
 ) -> Result<(CommandBuilder, String, bool), String> {
     if launch_omp {
@@ -774,6 +805,9 @@ fn build_command(
         cmd.env_remove("TMUX");
         cmd.env_remove("TMUX_PANE");
         cmd.env("OMP_TMUX_SESSION", session_name);
+        if let Some(profile) = launch_profile.omp_profile_override(cmd.get_env("OMP_PROFILE")) {
+            cmd.env("OMP_PROFILE", profile);
+        }
         cmd.env("PATH", path);
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
@@ -1162,6 +1196,71 @@ mod tests {
     fn parses_persistent_terminal_slots() {
         let output = b"ultraterm-matrix-5\nother\nultraterm-matrix-2\nultraterm-matrix-5\nultraterm-matrix-0\nultraterm-matrix-9\n";
         assert_eq!(parse_persistent_slots(output), vec![2, 5]);
+    }
+
+    #[test]
+    fn launch_profile_contract_accepts_only_supported_values() {
+        assert_eq!(
+            serde_json::from_str::<LaunchProfile>("\"default\"").unwrap(),
+            LaunchProfile::Default
+        );
+        assert_eq!(
+            serde_json::from_str::<LaunchProfile>("\"gpt-only\"").unwrap(),
+            LaunchProfile::GptOnly
+        );
+        assert_eq!(
+            serde_json::from_str::<LaunchProfile>("\"kimi-k3\"").unwrap(),
+            LaunchProfile::KimiK3
+        );
+        assert_eq!(
+            serde_json::to_string(&LaunchProfile::Default).unwrap(),
+            "\"default\""
+        );
+        assert_eq!(
+            serde_json::to_string(&LaunchProfile::GptOnly).unwrap(),
+            "\"gpt-only\""
+        );
+        assert_eq!(
+            serde_json::to_string(&LaunchProfile::KimiK3).unwrap(),
+            "\"kimi-k3\""
+        );
+        assert!(serde_json::from_str::<LaunchProfile>("\"kimi\"").is_err());
+        assert!(serde_json::from_str::<LaunchProfile>("\"\"").is_err());
+    }
+
+    #[test]
+    fn launch_profile_preserves_inherited_or_selects_deterministic_override() {
+        assert_eq!(
+            LaunchProfile::Default.omp_profile_override(Some(OsStr::new("lds"))),
+            None
+        );
+        assert_eq!(
+            LaunchProfile::Default.omp_profile_override(Some(OsStr::new(""))),
+            Some("lds")
+        );
+        assert_eq!(
+            LaunchProfile::Default.omp_profile_override(None),
+            Some("lds")
+        );
+        assert_eq!(
+            LaunchProfile::GptOnly.omp_profile_override(Some(OsStr::new("lds"))),
+            Some("gpt-only")
+        );
+        assert_eq!(
+            LaunchProfile::KimiK3.omp_profile_override(Some(OsStr::new("lds"))),
+            Some("kimi-k3")
+        );
+    }
+
+    #[test]
+    fn omitted_launch_profile_defaults_to_inherited_profile() {
+        let request: CreateSessionRequest = serde_json::from_value(serde_json::json!({
+            "slot": 1,
+            "cols": 80,
+            "rows": 24
+        }))
+        .unwrap();
+        assert_eq!(request.launch_profile, LaunchProfile::Default);
     }
 
     #[test]

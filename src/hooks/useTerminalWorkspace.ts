@@ -17,6 +17,7 @@ import {
   writeToSession,
 } from "../lib/terminalApi";
 import type {
+  LaunchProfileId,
   MemorySnapshot,
   TokenTelemetry,
   TerminalController,
@@ -24,9 +25,13 @@ import type {
   TerminalOutputEvent,
   WorkspaceSession,
 } from "../types";
+import { isLaunchProfileId } from "../types";
 
 const MAX_PENDING_OUTPUT_BYTES = 256 * 1024;
 const ACTIVITY_IDLE_DELAY_MS = 1_200;
+const METRICS_POLL_INTERVAL_MS = 5_000;
+const TELEMETRY_OUTPUT_DEBOUNCE_MS = 800;
+const TELEMETRY_MIN_FETCH_GAP_MS = 1_500;
 const DEFAULT_METRICS: MemorySnapshot = {
   appMemoryMib: 0,
   terminalMemoryMib: 0,
@@ -42,6 +47,12 @@ const EMPTY_TOKEN_COUNTS = {
 };
 const TEXT_ENCODER = new TextEncoder();
 const TERMINAL_SLOTS_STORAGE_KEY = "ultraterm.open-terminal-slots";
+const LAUNCH_PROFILE_STORAGE_KEY = "ultraterm.launch-profile";
+
+export interface TerminalLaunchRow {
+  slot: number;
+  launchProfile: LaunchProfileId;
+}
 
 export async function cleanupOrphanTmuxSlots(
   intendedSlots: number[],
@@ -73,20 +84,46 @@ export async function reconnectTerminalSlot<T>(
   return launch(slot);
 }
 
-export function readTerminalSlots(maxSlots: number): number[] | null {
+/**
+ * Reads persisted terminal launch rows. The legacy format stored a bare array of
+ * slot numbers; those entries migrate in place to the `default` launch profile.
+ */
+export function readTerminalLaunchRows(maxSlots: number): TerminalLaunchRow[] | null {
   try {
     const stored = window.localStorage.getItem(TERMINAL_SLOTS_STORAGE_KEY);
     if (stored === null) return null;
     const parsed: unknown = JSON.parse(stored);
     if (!Array.isArray(parsed)) return null;
-    return Array.from(new Set(
-      parsed.filter(
-        (slot): slot is number =>
-          Number.isInteger(slot) && slot >= 1 && slot <= maxSlots,
-      ),
-    )).sort((left, right) => left - right);
+    const rows = new Map<number, LaunchProfileId>();
+    for (const entry of parsed) {
+      const record = typeof entry === "object" && entry !== null
+        ? entry as { slot?: unknown; launchProfile?: unknown }
+        : null;
+      const slot = record ? record.slot : entry;
+      if (
+        typeof slot !== "number"
+        || !Number.isInteger(slot)
+        || slot < 1
+        || slot > maxSlots
+      ) continue;
+      rows.set(
+        slot,
+        record && isLaunchProfileId(record.launchProfile) ? record.launchProfile : "default",
+      );
+    }
+    return Array.from(rows, ([slot, launchProfile]) => ({ slot, launchProfile }))
+      .sort((left, right) => left.slot - right.slot);
   } catch {
     return null;
+  }
+}
+
+export function readLastLaunchProfile(): LaunchProfileId {
+  try {
+    const stored = window.localStorage.getItem(LAUNCH_PROFILE_STORAGE_KEY);
+    return isLaunchProfileId(stored) ? stored : "default";
+  } catch {
+    return "default";
   }
 }
 
@@ -102,6 +139,8 @@ const DEFAULT_TOKEN_TELEMETRY: TokenTelemetry = {
   past24Hours: { ...EMPTY_TOKEN_COUNTS },
   past7Days: { ...EMPTY_TOKEN_COUNTS },
   allTime: { ...EMPTY_TOKEN_COUNTS },
+  today: { ...EMPTY_TOKEN_COUNTS },
+  history: [],
   activeSubagents: 0,
   inactiveSubagents: 0,
   parallelAgents: 0,
@@ -118,12 +157,18 @@ export function useTerminalWorkspace(sessionCap: number) {
   const [sessions, setSessions] = useState<WorkspaceSession[]>([]);
   const [metrics, setMetrics] = useState<MemorySnapshot>(DEFAULT_METRICS);
   const [telemetry, setTelemetry] = useState<TokenTelemetry>(DEFAULT_TOKEN_TELEMETRY);
+  const [launchProfile, setLaunchProfile] = useState<LaunchProfileId>(readLastLaunchProfile);
   const [isBooting, setIsBooting] = useState(false);
   const [isAddingPane, setIsAddingPane] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const controllers = useRef(new Map<string, TerminalController>());
   const pendingOutput = useRef(new Map<string, PendingOutput>());
   const activityTimers = useRef(new Map<string, number>());
+  const telemetryFetch = useRef<{ timer: number | null; lastFetch: number }>({
+    timer: null,
+    lastFetch: 0,
+  });
+  const refreshMetricsRef = useRef<() => void>(() => undefined);
   const bootstrapped = useRef(false);
   const addPaneInFlight = useRef(false);
   const listenersReady = useRef<Promise<void>>(Promise.resolve());
@@ -182,6 +227,13 @@ export function useTerminalWorkspace(sessionCap: number) {
       listen<TerminalOutputEvent>("terminal-output", ({ payload }) => {
         if (!active) return;
         markWorking(payload.id);
+        const tracker = telemetryFetch.current;
+        if (tracker.timer === null && Date.now() - tracker.lastFetch > TELEMETRY_MIN_FETCH_GAP_MS) {
+          tracker.timer = window.setTimeout(() => {
+            tracker.timer = null;
+            refreshMetricsRef.current();
+          }, TELEMETRY_OUTPUT_DEBOUNCE_MS);
+        }
         const bytes = base64ToBytes(payload.data);
         const controller = controllers.current.get(payload.id);
 
@@ -218,6 +270,10 @@ export function useTerminalWorkspace(sessionCap: number) {
       active = false;
       activityTimers.current.forEach((timer) => window.clearTimeout(timer));
       activityTimers.current.clear();
+      if (telemetryFetch.current.timer !== null) {
+        window.clearTimeout(telemetryFetch.current.timer);
+        telemetryFetch.current.timer = null;
+      }
       void Promise.all(unlistenPromises).then((unlisteners) => {
         unlisteners.forEach((unlisten) => unlisten());
       });
@@ -229,6 +285,7 @@ export function useTerminalWorkspace(sessionCap: number) {
     let active = true;
 
     const refreshMetrics = async () => {
+      telemetryFetch.current.lastFetch = Date.now();
       const [memoryResult, tokenResult] = await Promise.allSettled([
         systemMetrics(),
         fetchTokenTelemetry(),
@@ -250,19 +307,21 @@ export function useTerminalWorkspace(sessionCap: number) {
     };
 
     void refreshMetrics();
-    const interval = window.setInterval(refreshMetrics, 10_000);
+    refreshMetricsRef.current = () => void refreshMetrics();
+    const interval = window.setInterval(refreshMetrics, METRICS_POLL_INTERVAL_MS);
     return () => {
       active = false;
+      refreshMetricsRef.current = () => undefined;
       window.clearInterval(interval);
     };
   }, [desktopRuntime, sessionCap, sessions.length]);
 
   useEffect(() => {
     if (!desktopRuntime || !bootstrapped.current || isBooting) return;
-    const slots = sessions
-      .map((session) => session.slot)
-      .sort((left, right) => left - right);
-    window.localStorage.setItem(TERMINAL_SLOTS_STORAGE_KEY, JSON.stringify(slots));
+    const rows: TerminalLaunchRow[] = sessions
+      .map((session) => ({ slot: session.slot, launchProfile: session.launchProfile }))
+      .sort((left, right) => left.slot - right.slot);
+    window.localStorage.setItem(TERMINAL_SLOTS_STORAGE_KEY, JSON.stringify(rows));
   }, [desktopRuntime, isBooting, sessions]);
 
   const registerController = useCallback((id: string, controller: TerminalController | null) => {
@@ -279,7 +338,7 @@ export function useTerminalWorkspace(sessionCap: number) {
     }
   }, []);
 
-  const launchSlot = useCallback(async (slot: number) => {
+  const launchSlot = useCallback(async (slot: number, profile: LaunchProfileId) => {
     if (!desktopRuntime) {
       throw new Error("Terminal sessions require the UltraTerm desktop runtime.");
     }
@@ -288,10 +347,16 @@ export function useTerminalWorkspace(sessionCap: number) {
       cols: 80,
       rows: 24,
       launchOmp: true,
+      launchProfile: profile,
     });
     setSessions((current) => [
       ...current.filter((session) => session.id !== info.id && session.slot !== info.slot),
-      { ...info, status: "live" as const, activity: "idle" as const },
+      {
+        ...info,
+        launchProfile: info.launchProfile ?? profile,
+        status: "live" as const,
+        activity: "idle" as const,
+      },
     ].sort((left, right) => left.slot - right.slot));
     return info;
   }, [desktopRuntime]);
@@ -312,6 +377,7 @@ export function useTerminalWorkspace(sessionCap: number) {
     }
     setSessions(existing.map((session) => ({
       ...session,
+      launchProfile: session.launchProfile ?? "default",
       status: "live" as const,
       activity: "idle" as const,
     })));
@@ -330,44 +396,60 @@ export function useTerminalWorkspace(sessionCap: number) {
       if (existing.length > 0) {
         setSessions(existing.map((session) => ({
           ...session,
+          launchProfile: session.launchProfile ?? "default",
           status: "live" as const,
           activity: "idle" as const,
         })));
       }
 
       const occupiedSlots = new Set(existing.map((session) => session.slot));
-      const savedSlots = readTerminalSlots(sessionCap);
+      const savedRows = readTerminalLaunchRows(sessionCap);
       const persistentSlots = await listPersistentSlots();
       const restorablePersistentSlots = persistentSlots.filter((slot) => slot <= sessionCap);
-      let slotsToRestore: number[];
-      if (savedSlots !== null) {
-        slotsToRestore = savedSlots;
+      let rowsToRestore: TerminalLaunchRow[];
+      if (savedRows !== null) {
+        rowsToRestore = savedRows;
       } else if (restorablePersistentSlots.length > 0) {
-        slotsToRestore = restorablePersistentSlots;
+        rowsToRestore = restorablePersistentSlots.map((slot) => ({
+          slot,
+          launchProfile: "default" as const,
+        }));
       } else {
-        slotsToRestore = defaultTerminalSlots(targetCount, sessionCap);
+        rowsToRestore = defaultTerminalSlots(targetCount, sessionCap).map((slot) => ({
+          slot,
+          launchProfile,
+        }));
       }
 
       const intendedSlots = Array.from(
-        new Set([...existing.map((session) => session.slot), ...slotsToRestore]),
+        new Set([...existing.map((session) => session.slot), ...rowsToRestore.map((row) => row.slot)]),
       ).sort((left, right) => left - right);
       await cleanupOrphanSlots(intendedSlots);
 
-      for (const slot of slotsToRestore) {
-        if (!occupiedSlots.has(slot)) await launchSlot(slot);
+      for (const row of rowsToRestore) {
+        if (!occupiedSlots.has(row.slot)) await launchSlot(row.slot, row.launchProfile);
       }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     } finally {
       setIsBooting(false);
     }
-  }, [desktopRuntime, cleanupOrphanSlots, launchSlot, sessionCap]);
+  }, [desktopRuntime, cleanupOrphanSlots, launchProfile, launchSlot, sessionCap]);
 
-  const addPane = useCallback(async () => {
+  const addPane = useCallback(async (profile?: LaunchProfileId) => {
     if (addPaneInFlight.current) return;
     addPaneInFlight.current = true;
     setIsAddingPane(true);
     setNotice(null);
+    const resolvedProfile = profile ?? launchProfile;
+    if (profile) {
+      setLaunchProfile(profile);
+      try {
+        window.localStorage.setItem(LAUNCH_PROFILE_STORAGE_KEY, profile);
+      } catch {
+        // Profile persistence is best-effort; the launch still proceeds.
+      }
+    }
 
     try {
       const maxSessions = Math.min(sessionCap, metrics.maxSessions);
@@ -384,14 +466,14 @@ export function useTerminalWorkspace(sessionCap: number) {
         return;
       }
 
-      await launchSlot(nextSlot);
+      await launchSlot(nextSlot, resolvedProfile);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     } finally {
       addPaneInFlight.current = false;
       setIsAddingPane(false);
     }
-  }, [launchSlot, metrics.maxSessions, sessionCap, sessions]);
+  }, [launchProfile, launchSlot, metrics.maxSessions, sessionCap, sessions]);
 
   const removePane = useCallback(async (id: string) => {
     const session = sessions.find((candidate) => candidate.id === id);
@@ -426,7 +508,13 @@ export function useTerminalWorkspace(sessionCap: number) {
 
     setNotice(null);
     try {
-      await reconnectTerminalSlot(id, session.slot, detachSession, forgetSession, launchSlot);
+      await reconnectTerminalSlot(
+        id,
+        session.slot,
+        detachSession,
+        forgetSession,
+        (slot) => launchSlot(slot, session.launchProfile),
+      );
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     }
@@ -448,7 +536,7 @@ export function useTerminalWorkspace(sessionCap: number) {
       } else {
         const occupied = new Set(ordered.map((session) => session.slot));
         for (let slot = 1; slot <= targetCount; slot += 1) {
-          if (!occupied.has(slot)) await launchSlot(slot);
+          if (!occupied.has(slot)) await launchSlot(slot, launchProfile);
         }
       }
       const intendedSlots = Array.from({ length: targetCount }, (_, index) => index + 1);
@@ -456,10 +544,12 @@ export function useTerminalWorkspace(sessionCap: number) {
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
     }
-  }, [cleanupOrphanSlots, forgetSession, launchSlot, sessions]);
+  }, [cleanupOrphanSlots, forgetSession, launchProfile, launchSlot, sessions]);
 
   const restartAll = useCallback(async () => {
-    const slots = sessions.map((session) => session.slot).sort((left, right) => left - right);
+    const rows: TerminalLaunchRow[] = sessions
+      .map((session) => ({ slot: session.slot, launchProfile: session.launchProfile }))
+      .sort((left, right) => left.slot - right.slot);
     setIsBooting(true);
     setNotice(null);
 
@@ -467,8 +557,8 @@ export function useTerminalWorkspace(sessionCap: number) {
       await detachAllSessions();
       clearRuntimeState();
       setSessions([]);
-      for (const slot of slots) await launchSlot(slot);
-      await cleanupOrphanSlots(slots);
+      for (const row of rows) await launchSlot(row.slot, row.launchProfile);
+      await cleanupOrphanSlots(rows.map((row) => row.slot));
     } catch (error) {
       await reconcileSessions().catch((reconcileError) => {
         console.error("UltraTerm could not reconcile terminal clients", reconcileError);
@@ -510,7 +600,6 @@ export function useTerminalWorkspace(sessionCap: number) {
     controllers.current.get(id)?.hasPendingInput() ?? false
   ), []);
 
-
   const sendTerminalInput = useCallback(async (id: string, data: string) => {
     setNotice(null);
     const session = sessions.find((candidate) => candidate.id === id);
@@ -551,6 +640,7 @@ export function useTerminalWorkspace(sessionCap: number) {
     sessions,
     metrics,
     telemetry,
+    launchProfile,
     isBooting,
     isAddingPane,
     notice,

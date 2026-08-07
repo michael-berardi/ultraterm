@@ -21,6 +21,7 @@ import {
   DEFAULT_TERMINAL_PREFERENCES,
   TERMINAL_SCROLLBACK,
   type EffectMode,
+  type LaunchProfileId,
   type ThemeId,
   type TerminalPreferences,
   type VoiceInputState,
@@ -551,13 +552,13 @@ function App(): ReactElement {
     requestCloseTerminals(selectedTerminalIds());
   }, [requestCloseTerminals, selectedTerminalIds]);
 
-  const addTerminal = useCallback((): void => {
+  const addTerminal = useCallback((profile?: LaunchProfileId): void => {
     if (
       workspace.isBooting
       || workspace.isAddingPane
       || workspace.sessions.length >= workspace.metrics.maxSessions
     ) return;
-    void workspace.addPane();
+    void workspace.addPane(profile);
   }, [
     workspace.addPane,
     workspace.isAddingPane,
@@ -1125,6 +1126,7 @@ function App(): ReactElement {
         maximizedId={maximizedId}
         metrics={workspace.metrics}
         telemetry={workspace.telemetry}
+        launchProfile={workspace.launchProfile}
         isBooting={workspace.isBooting || workspace.isAddingPane}
         theme={theme}
         effectMode={effectMode}

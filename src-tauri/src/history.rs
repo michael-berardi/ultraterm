@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 use rusqlite::{params, Connection, OpenFlags, Row};
@@ -11,8 +12,9 @@ const DEFAULT_RESULT_LIMIT: u32 = 20;
 const MAX_RESULT_LIMIT: u32 = 50;
 const MAX_QUERY_CHARS: usize = 256;
 const PREVIEW_CHARS: i64 = 800;
-static DISCOVERED_OMP_AGENT_DIRECTORY: LazyLock<Option<PathBuf>> =
-    LazyLock::new(discover_omp_agent_directory);
+static DISCOVERED_OMP_AGENT_DIRECTORIES: LazyLock<
+    Mutex<HashMap<Option<OsString>, Option<PathBuf>>>,
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -25,14 +27,14 @@ pub struct HistoryEntry {
     pub truncated: bool,
 }
 
-fn nonempty_env(name: &str) -> Option<std::ffi::OsString> {
+fn nonempty_env(name: &str) -> Option<OsString> {
     std::env::var_os(name).filter(|value| !value.is_empty())
 }
 
 fn omp_agent_directory_from(
     home: &Path,
-    agent_directory: Option<&std::ffi::OsStr>,
-    profile: Option<&std::ffi::OsStr>,
+    agent_directory: Option<&OsStr>,
+    profile: Option<&OsStr>,
     discovered: Option<&Path>,
 ) -> PathBuf {
     if let Some(agent_directory) = agent_directory {
@@ -60,13 +62,12 @@ fn omp_config_path_arguments(profile: Option<&OsStr>) -> Vec<OsString> {
     arguments
 }
 
-fn discover_omp_agent_directory() -> Option<PathBuf> {
+fn discover_omp_agent_directory(profile: Option<&OsStr>) -> Option<PathBuf> {
     let omp = crate::resolve_optional_executable("OMP_BIN", "omp", &[])
         .ok()
         .flatten()?;
-    let profile = nonempty_env("OMP_PROFILE");
     let output = Command::new(omp)
-        .args(omp_config_path_arguments(profile.as_deref()))
+        .args(omp_config_path_arguments(profile))
         .output()
         .ok()?;
     if !output.status.success() {
@@ -78,17 +79,58 @@ fn discover_omp_agent_directory() -> Option<PathBuf> {
     (!path.as_os_str().is_empty()).then_some(path)
 }
 
+fn discovered_omp_agent_directory(profile: Option<&OsStr>) -> Option<PathBuf> {
+    let key = profile.map(OsStr::to_os_string);
+    if let Ok(discovered) = DISCOVERED_OMP_AGENT_DIRECTORIES.lock() {
+        if let Some(path) = discovered.get(&key) {
+            return path.clone();
+        }
+    }
+
+    let path = discover_omp_agent_directory(profile);
+    if let Ok(mut discovered) = DISCOVERED_OMP_AGENT_DIRECTORIES.lock() {
+        discovered.insert(key, path.clone());
+    }
+    path
+}
+
+pub(crate) fn omp_agent_directory_for_profile(home: &Path, profile: Option<&OsStr>) -> PathBuf {
+    let profile = profile.filter(|value| !value.is_empty());
+    if profile.is_none() {
+        return omp_agent_directory(home);
+    }
+    let inherited_profile = nonempty_env("OMP_PROFILE");
+    let agent_directory = if profile == inherited_profile.as_deref() {
+        nonempty_env("PI_CODING_AGENT_DIR")
+    } else {
+        None
+    };
+    let discovered = if agent_directory.is_none() {
+        discovered_omp_agent_directory(profile)
+    } else {
+        None
+    };
+    omp_agent_directory_from(
+        home,
+        agent_directory.as_deref(),
+        profile,
+        discovered.as_deref(),
+    )
+}
+
 pub(crate) fn omp_agent_directory(home: &Path) -> PathBuf {
     let agent_directory = nonempty_env("PI_CODING_AGENT_DIR");
     let profile = nonempty_env("OMP_PROFILE");
-    let discovered = agent_directory
-        .is_none()
-        .then(|| DISCOVERED_OMP_AGENT_DIRECTORY.as_deref());
+    let discovered = if agent_directory.is_none() {
+        discovered_omp_agent_directory(profile.as_deref())
+    } else {
+        None
+    };
     omp_agent_directory_from(
         home,
         agent_directory.as_deref(),
         profile.as_deref(),
-        discovered.flatten(),
+        discovered.as_deref(),
     )
 }
 
@@ -246,6 +288,29 @@ mod tests {
                 .join("team")
                 .join("agent")
         );
+    }
+
+    #[test]
+    fn profile_agent_directories_are_resolved_independently() {
+        let home = Path::new("/home/user");
+        let gpt = omp_agent_directory_from(home, None, Some(OsStr::new("gpt-only")), None);
+        let kimi = omp_agent_directory_from(home, None, Some(OsStr::new("kimi-k3")), None);
+
+        assert_eq!(
+            gpt,
+            home.join(".omp")
+                .join("profiles")
+                .join("gpt-only")
+                .join("agent")
+        );
+        assert_eq!(
+            kimi,
+            home.join(".omp")
+                .join("profiles")
+                .join("kimi-k3")
+                .join("agent")
+        );
+        assert_ne!(gpt, kimi);
     }
 
     #[test]

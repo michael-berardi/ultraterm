@@ -17,12 +17,35 @@ export const DEFAULT_TERMINAL_PREFERENCES: Readonly<TerminalPreferences> = {
 export type SessionStatus = "connecting" | "live" | "exited" | "error";
 export type SessionActivity = "idle" | "working";
 
+export type LaunchProfileId = "default" | "gpt-only" | "kimi-k3";
+
+export interface LaunchProfileOption {
+  id: LaunchProfileId;
+  label: string;
+  description: string;
+}
+
+export const LAUNCH_PROFILE_OPTIONS: ReadonlyArray<LaunchProfileOption> = [
+  { id: "default", label: "Default", description: "Inherit the current OMP setup" },
+  { id: "gpt-only", label: "GPT only", description: "Launch with the gpt-only OMP profile" },
+  { id: "kimi-k3", label: "Kimi K3", description: "Launch with the kimi-k3 OMP profile" },
+];
+
+export function isLaunchProfileId(value: unknown): value is LaunchProfileId {
+  return value === "default" || value === "gpt-only" || value === "kimi-k3";
+}
+
+export function launchProfileLabel(profile: LaunchProfileId | null | undefined): string {
+  return LAUNCH_PROFILE_OPTIONS.find((option) => option.id === profile)?.label ?? "Default";
+}
+
 export interface SessionInfo {
   id: string;
   slot: number;
   title: string;
   pid: number | null;
   launchedOmp: boolean;
+  launchProfile: LaunchProfileId;
 }
 
 export interface WorkspaceSession extends SessionInfo {
@@ -64,8 +87,23 @@ export interface TerminalTokenTelemetry {
   inactiveSubagents: number;
 }
 
+export interface TokenModelUsage {
+  model: string;
+  usage: TokenCounts;
+}
+
+export interface TokenHistoryDay {
+  /** Local calendar day in YYYY-MM-DD form. */
+  date: string;
+  usage: TokenCounts;
+  models: TokenModelUsage[];
+}
+
 export interface TokenTelemetry {
   terminals: TerminalTokenTelemetry[];
+  /** Exact tokens for the current local calendar day. */
+  today: TokenCounts;
+  history: TokenHistoryDay[];
   past24Hours: TokenCounts;
   past7Days: TokenCounts;
   allTime: TokenCounts;
@@ -142,6 +180,8 @@ export interface CreateSessionRequest {
   rows: number;
   workingDirectory?: string;
   launchOmp: boolean;
+  /** Omitted means the backend launches the `default` profile. */
+  launchProfile?: LaunchProfileId;
 }
 
 export interface TerminalOutputEvent {

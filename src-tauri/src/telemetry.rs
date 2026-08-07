@@ -1,11 +1,13 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use chrono::DateTime;
+use chrono::{DateTime, Local, NaiveDate, Utc};
+use rusqlite::{params, Connection};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -13,6 +15,8 @@ const SNAPSHOT_TTL: Duration = Duration::from_secs(3);
 const SECONDS_PER_DAY: i64 = 24 * 60 * 60;
 const REGISTRY_DIRECTORY: &str = ".ultraterm";
 const REGISTRY_FILE: &str = "telemetry-sessions.json";
+const TELEMETRY_INDEX_FILE: &str = "telemetry.sqlite3";
+const UNKNOWN_MODEL: &str = "unknown";
 const ULTRATERM_SESSION_PREFIX: &str = "ultraterm-matrix-";
 
 #[derive(Clone, Default, Serialize)]
@@ -48,8 +52,25 @@ pub struct TerminalTokenTelemetry {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TokenHistoryModel {
+    pub model: String,
+    pub usage: TokenCounts,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenHistoryDay {
+    pub date: String,
+    pub usage: TokenCounts,
+    pub models: Vec<TokenHistoryModel>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TokenTelemetry {
     pub terminals: Vec<TerminalTokenTelemetry>,
+    pub today: TokenCounts,
+    pub history: Vec<TokenHistoryDay>,
     pub past_24_hours: TokenCounts,
     pub past_7_days: TokenCounts,
     pub all_time: TokenCounts,
@@ -60,38 +81,94 @@ pub struct TokenTelemetry {
     pub updated_at: u64,
 }
 
+#[derive(Clone)]
+struct TimedUsage {
+    timestamp: i64,
+    model: Option<String>,
+    counts: TokenCounts,
+}
+
 #[derive(Clone, Default)]
 struct FileUsage {
     total: TokenCounts,
-    timed: Vec<(i64, TokenCounts)>,
+    timed: Vec<TimedUsage>,
     exited: bool,
     assistant_records: usize,
     model: Option<String>,
 }
 
-fn aggregate_windows<'a>(
-    usages: impl Iterator<Item = &'a FileUsage>,
-    now: i64,
-) -> (TokenCounts, TokenCounts, TokenCounts) {
+struct AggregatedUsage {
+    past_24_hours: TokenCounts,
+    past_7_days: TokenCounts,
+    all_time: TokenCounts,
+    today: TokenCounts,
+    history: Vec<TokenHistoryDay>,
+}
+
+fn local_date(timestamp: i64) -> Option<NaiveDate> {
+    DateTime::<Utc>::from_timestamp(timestamp, 0)
+        .map(|timestamp| timestamp.with_timezone(&Local).date_naive())
+}
+
+fn aggregate_usage<'a>(usages: impl Iterator<Item = &'a FileUsage>, now: i64) -> AggregatedUsage {
     let past_24_hour_boundary = now.saturating_sub(SECONDS_PER_DAY);
     let past_7_day_boundary = now.saturating_sub(7 * SECONDS_PER_DAY);
+    let today_date = local_date(now);
     let mut past_24_hours = TokenCounts::default();
     let mut past_7_days = TokenCounts::default();
     let mut all_time = TokenCounts::default();
+    let mut today = TokenCounts::default();
+    let mut days: BTreeMap<NaiveDate, (TokenCounts, BTreeMap<String, TokenCounts>)> =
+        BTreeMap::new();
 
     for usage in usages {
         all_time.add(&usage.total);
-        for (timestamp, counts) in &usage.timed {
-            if *timestamp >= past_7_day_boundary {
-                past_7_days.add(counts);
+        for record in &usage.timed {
+            if record.timestamp >= past_7_day_boundary {
+                past_7_days.add(&record.counts);
             }
-            if *timestamp >= past_24_hour_boundary {
-                past_24_hours.add(counts);
+            if record.timestamp >= past_24_hour_boundary {
+                past_24_hours.add(&record.counts);
             }
+            let Some(date) = local_date(record.timestamp) else {
+                continue;
+            };
+            if Some(date) == today_date {
+                today.add(&record.counts);
+            }
+            let (day_usage, models) = days.entry(date).or_default();
+            day_usage.add(&record.counts);
+            models
+                .entry(
+                    record
+                        .model
+                        .clone()
+                        .unwrap_or_else(|| UNKNOWN_MODEL.to_string()),
+                )
+                .or_default()
+                .add(&record.counts);
         }
     }
 
-    (past_24_hours, past_7_days, all_time)
+    let history = days
+        .into_iter()
+        .map(|(date, (usage, models))| TokenHistoryDay {
+            date: date.format("%Y-%m-%d").to_string(),
+            usage,
+            models: models
+                .into_iter()
+                .map(|(model, usage)| TokenHistoryModel { model, usage })
+                .collect(),
+        })
+        .collect();
+
+    AggregatedUsage {
+        past_24_hours,
+        past_7_days,
+        all_time,
+        today,
+        history,
+    }
 }
 
 struct CachedFileUsage {
@@ -104,6 +181,7 @@ pub struct TokenTelemetryManager {
     file_cache: HashMap<PathBuf, CachedFileUsage>,
     registered_sessions: HashSet<PathBuf>,
     registry_loaded: bool,
+    index_loaded: bool,
     snapshot: Option<(Instant, TokenTelemetry)>,
 }
 
@@ -113,6 +191,7 @@ impl Default for TokenTelemetryManager {
             file_cache: HashMap::new(),
             registered_sessions: HashSet::new(),
             registry_loaded: false,
+            index_loaded: false,
             snapshot: None,
         }
     }
@@ -127,6 +206,7 @@ impl TokenTelemetryManager {
         }
 
         self.load_registry(home)?;
+        self.load_index(home)?;
         let terminal_sessions = current_terminal_sessions(home)?;
         let previous_sessions = self.registered_sessions.clone();
         self.registered_sessions.retain(|path| path.is_file());
@@ -144,15 +224,13 @@ impl TokenTelemetryManager {
         for session_path in &self.registered_sessions {
             collect_session_files(session_path, &mut files);
         }
-        self.refresh_files(&files);
-        self.file_cache.retain(|path, _| files.contains(path));
+        self.refresh_files(home, &files)?;
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
-        let (past_24_hours, past_7_days, all_time) =
-            aggregate_windows(self.file_cache.values().map(|cached| &cached.usage), now);
+        let aggregate = aggregate_usage(self.file_cache.values().map(|cached| &cached.usage), now);
 
         let mut terminals = Vec::with_capacity(crate::MAX_SESSION_SLOT as usize);
         let mut active_agent_paths = HashSet::new();
@@ -203,9 +281,11 @@ impl TokenTelemetryManager {
             .as_secs();
         let snapshot = TokenTelemetry {
             terminals,
-            past_24_hours,
-            past_7_days,
-            all_time,
+            today: aggregate.today,
+            history: aggregate.history,
+            past_24_hours: aggregate.past_24_hours,
+            past_7_days: aggregate.past_7_days,
+            all_time: aggregate.all_time,
             active_subagents,
             inactive_subagents,
             parallel_agents: active_subagents,
@@ -242,6 +322,15 @@ impl TokenTelemetryManager {
         Ok(())
     }
 
+    fn load_index(&mut self, home: &Path) -> Result<(), String> {
+        if self.index_loaded {
+            return Ok(());
+        }
+        self.file_cache = load_file_usage_index(home)?;
+        self.index_loaded = true;
+        Ok(())
+    }
+
     fn save_registry(&self, home: &Path) -> Result<(), String> {
         let registry_path = registry_path(home);
         if let Some(parent) = registry_path.parent() {
@@ -264,7 +353,8 @@ impl TokenTelemetryManager {
         })
     }
 
-    fn refresh_files(&mut self, files: &HashSet<PathBuf>) {
+    fn refresh_files(&mut self, home: &Path, files: &HashSet<PathBuf>) -> Result<(), String> {
+        let mut changed = Vec::new();
         for path in files {
             let metadata = match fs::metadata(path) {
                 Ok(metadata) => metadata,
@@ -280,25 +370,360 @@ impl TokenTelemetryManager {
                 continue;
             }
             if let Ok(usage) = parse_usage_file(path) {
-                self.file_cache.insert(
+                changed.push((
                     path.clone(),
                     CachedFileUsage {
                         length,
                         modified,
                         usage,
                     },
-                );
+                ));
+            }
+        }
+        if changed.is_empty() {
+            return Ok(());
+        }
+
+        persist_file_usage_index(home, &changed)?;
+        self.file_cache.extend(changed);
+        Ok(())
+    }
+}
+
+fn telemetry_index_path(home: &Path) -> PathBuf {
+    home.join(REGISTRY_DIRECTORY).join(TELEMETRY_INDEX_FILE)
+}
+
+fn open_telemetry_index(home: &Path) -> Result<Connection, String> {
+    let path = telemetry_index_path(home);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Failed to create telemetry directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    let connection = Connection::open(&path).map_err(|error| {
+        format!(
+            "Failed to open token telemetry index {}: {error}",
+            path.display()
+        )
+    })?;
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE IF NOT EXISTS telemetry_files (
+                 path TEXT PRIMARY KEY,
+                 length INTEGER NOT NULL,
+                 modified_ns INTEGER,
+                 total_input INTEGER NOT NULL,
+                 total_output INTEGER NOT NULL,
+                 total_cache_read INTEGER NOT NULL,
+                 total_cache_write INTEGER NOT NULL,
+                 total INTEGER NOT NULL,
+                 exited INTEGER NOT NULL,
+                 assistant_records INTEGER NOT NULL,
+                 model TEXT
+             );
+             CREATE TABLE IF NOT EXISTS telemetry_records (
+                 file_path TEXT NOT NULL,
+                 record_index INTEGER NOT NULL,
+                 timestamp INTEGER NOT NULL,
+                 model TEXT,
+                 input INTEGER NOT NULL,
+                 output INTEGER NOT NULL,
+                 cache_read INTEGER NOT NULL,
+                 cache_write INTEGER NOT NULL,
+                 total INTEGER NOT NULL,
+                 PRIMARY KEY (file_path, record_index),
+                 FOREIGN KEY (file_path) REFERENCES telemetry_files(path) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS telemetry_records_timestamp
+                 ON telemetry_records(timestamp);
+             PRAGMA user_version = 1;",
+        )
+        .map_err(|error| {
+            format!(
+                "Failed to initialize token telemetry index {}: {error}",
+                path.display()
+            )
+        })?;
+    Ok(connection)
+}
+
+fn stored_u64(value: i64) -> u64 {
+    u64::try_from(value).unwrap_or_default()
+}
+
+fn sqlite_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn modified_time_to_nanos(modified: Option<SystemTime>) -> Option<i64> {
+    modified?
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_nanos()).ok())
+}
+
+fn modified_time_from_nanos(modified_ns: Option<i64>) -> Option<SystemTime> {
+    let modified_ns = u64::try_from(modified_ns?).ok()?;
+    Some(UNIX_EPOCH + Duration::from_nanos(modified_ns))
+}
+
+fn load_file_usage_index(home: &Path) -> Result<HashMap<PathBuf, CachedFileUsage>, String> {
+    let path = telemetry_index_path(home);
+    let connection = open_telemetry_index(home)?;
+    let mut files = HashMap::new();
+    {
+        let mut statement = connection
+            .prepare(
+                "SELECT path, length, modified_ns, total_input, total_output,
+                        total_cache_read, total_cache_write, total, exited,
+                        assistant_records, model
+                 FROM telemetry_files",
+            )
+            .map_err(|error| {
+                format!(
+                    "Failed to read token telemetry index {}: {error}",
+                    path.display()
+                )
+            })?;
+        let rows = statement
+            .query_map([], |row| {
+                let path: String = row.get(0)?;
+                let length: i64 = row.get(1)?;
+                let modified_ns: Option<i64> = row.get(2)?;
+                let exited: i64 = row.get(8)?;
+                let assistant_records: i64 = row.get(9)?;
+                Ok((
+                    PathBuf::from(path),
+                    CachedFileUsage {
+                        length: stored_u64(length),
+                        modified: modified_time_from_nanos(modified_ns),
+                        usage: FileUsage {
+                            total: TokenCounts {
+                                input: stored_u64(row.get(3)?),
+                                output: stored_u64(row.get(4)?),
+                                cache_read: stored_u64(row.get(5)?),
+                                cache_write: stored_u64(row.get(6)?),
+                                total: stored_u64(row.get(7)?),
+                            },
+                            timed: Vec::new(),
+                            exited: exited != 0,
+                            assistant_records: usize::try_from(assistant_records)
+                                .unwrap_or_default(),
+                            model: row.get(10)?,
+                        },
+                    },
+                ))
+            })
+            .map_err(|error| {
+                format!(
+                    "Failed to query token telemetry index {}: {error}",
+                    path.display()
+                )
+            })?;
+        for row in rows {
+            let (file_path, usage) = row.map_err(|error| {
+                format!(
+                    "Failed to decode token telemetry index {}: {error}",
+                    path.display()
+                )
+            })?;
+            files.insert(file_path, usage);
+        }
+    }
+
+    {
+        let mut statement = connection
+            .prepare(
+                "SELECT file_path, timestamp, model, input, output, cache_read,
+                        cache_write, total
+                 FROM telemetry_records
+                 ORDER BY file_path, record_index",
+            )
+            .map_err(|error| {
+                format!(
+                    "Failed to read token telemetry records {}: {error}",
+                    path.display()
+                )
+            })?;
+        let rows = statement
+            .query_map([], |row| {
+                let file_path: String = row.get(0)?;
+                Ok((
+                    PathBuf::from(file_path),
+                    TimedUsage {
+                        timestamp: row.get(1)?,
+                        model: row.get(2)?,
+                        counts: TokenCounts {
+                            input: stored_u64(row.get(3)?),
+                            output: stored_u64(row.get(4)?),
+                            cache_read: stored_u64(row.get(5)?),
+                            cache_write: stored_u64(row.get(6)?),
+                            total: stored_u64(row.get(7)?),
+                        },
+                    },
+                ))
+            })
+            .map_err(|error| {
+                format!(
+                    "Failed to query token telemetry records {}: {error}",
+                    path.display()
+                )
+            })?;
+        for row in rows {
+            let (file_path, record) = row.map_err(|error| {
+                format!(
+                    "Failed to decode token telemetry records {}: {error}",
+                    path.display()
+                )
+            })?;
+            if let Some(file) = files.get_mut(&file_path) {
+                file.usage.timed.push(record);
             }
         }
     }
+
+    Ok(files)
+}
+
+fn persist_file_usage_index(
+    home: &Path,
+    changed: &[(PathBuf, CachedFileUsage)],
+) -> Result<(), String> {
+    let path = telemetry_index_path(home);
+    let mut connection = open_telemetry_index(home)?;
+    let transaction = connection.transaction().map_err(|error| {
+        format!(
+            "Failed to update token telemetry index {}: {error}",
+            path.display()
+        )
+    })?;
+    {
+        let mut upsert_file = transaction
+            .prepare(
+                "INSERT INTO telemetry_files (
+                     path, length, modified_ns, total_input, total_output,
+                     total_cache_read, total_cache_write, total, exited,
+                     assistant_records, model
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 ON CONFLICT(path) DO UPDATE SET
+                     length = excluded.length,
+                     modified_ns = excluded.modified_ns,
+                     total_input = excluded.total_input,
+                     total_output = excluded.total_output,
+                     total_cache_read = excluded.total_cache_read,
+                     total_cache_write = excluded.total_cache_write,
+                     total = excluded.total,
+                     exited = excluded.exited,
+                     assistant_records = excluded.assistant_records,
+                     model = excluded.model",
+            )
+            .map_err(|error| {
+                format!(
+                    "Failed to prepare token telemetry update {}: {error}",
+                    path.display()
+                )
+            })?;
+        let mut delete_records = transaction
+            .prepare("DELETE FROM telemetry_records WHERE file_path = ?1")
+            .map_err(|error| {
+                format!(
+                    "Failed to prepare token telemetry record update {}: {error}",
+                    path.display()
+                )
+            })?;
+        let mut insert_record = transaction
+            .prepare(
+                "INSERT INTO telemetry_records (
+                     file_path, record_index, timestamp, model, input, output,
+                     cache_read, cache_write, total
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            )
+            .map_err(|error| {
+                format!(
+                    "Failed to prepare token telemetry record insert {}: {error}",
+                    path.display()
+                )
+            })?;
+
+        for (file_path, cached) in changed {
+            let file_path = file_path.to_string_lossy();
+            upsert_file
+                .execute(params![
+                    file_path.as_ref(),
+                    sqlite_i64(cached.length),
+                    modified_time_to_nanos(cached.modified),
+                    sqlite_i64(cached.usage.total.input),
+                    sqlite_i64(cached.usage.total.output),
+                    sqlite_i64(cached.usage.total.cache_read),
+                    sqlite_i64(cached.usage.total.cache_write),
+                    sqlite_i64(cached.usage.total.total),
+                    if cached.usage.exited { 1_i64 } else { 0_i64 },
+                    i64::try_from(cached.usage.assistant_records).unwrap_or(i64::MAX),
+                    cached.usage.model.as_deref(),
+                ])
+                .map_err(|error| {
+                    format!(
+                        "Failed to store token telemetry file {}: {error}",
+                        file_path
+                    )
+                })?;
+            delete_records
+                .execute([file_path.as_ref()])
+                .map_err(|error| {
+                    format!(
+                        "Failed to replace token telemetry records {}: {error}",
+                        file_path
+                    )
+                })?;
+            for (record_index, record) in cached.usage.timed.iter().enumerate() {
+                insert_record
+                    .execute(params![
+                        file_path.as_ref(),
+                        i64::try_from(record_index).unwrap_or(i64::MAX),
+                        record.timestamp,
+                        record.model.as_deref(),
+                        sqlite_i64(record.counts.input),
+                        sqlite_i64(record.counts.output),
+                        sqlite_i64(record.counts.cache_read),
+                        sqlite_i64(record.counts.cache_write),
+                        sqlite_i64(record.counts.total),
+                    ])
+                    .map_err(|error| {
+                        format!(
+                            "Failed to store token telemetry record {}: {error}",
+                            file_path
+                        )
+                    })?;
+            }
+        }
+    }
+    transaction.commit().map_err(|error| {
+        format!(
+            "Failed to commit token telemetry index {}: {error}",
+            path.display()
+        )
+    })
 }
 
 fn registry_path(home: &Path) -> PathBuf {
     home.join(REGISTRY_DIRECTORY).join(REGISTRY_FILE)
 }
 
-fn terminal_session_mapping_directory(home: &Path) -> PathBuf {
-    crate::history::omp_agent_directory(home).join("terminal-sessions")
+fn terminal_session_mapping_directory(home: &Path, profile: Option<&OsStr>) -> PathBuf {
+    crate::history::omp_agent_directory_for_profile(home, profile).join("terminal-sessions")
+}
+
+fn tmux_pane_fields(line: &str) -> Option<(&str, &str, Option<&str>)> {
+    let mut fields = line.splitn(3, '|');
+    let session_name = fields.next()?;
+    let tty = fields.next()?;
+    let profile = fields.next().filter(|profile| !profile.is_empty());
+    Some((session_name, tty, profile))
 }
 
 fn current_terminal_sessions(home: &Path) -> Result<HashMap<u32, PathBuf>, String> {
@@ -306,7 +731,12 @@ fn current_terminal_sessions(home: &Path) -> Result<HashMap<u32, PathBuf>, Strin
         return Ok(HashMap::new());
     };
     let output = match Command::new(tmux)
-        .args(["list-panes", "-a", "-F", "#{session_name}|#{pane_tty}"])
+        .args([
+            "list-panes",
+            "-a",
+            "-F",
+            "#{session_name}|#{pane_tty}|#{@omp-profile}",
+        ])
         .output()
     {
         Ok(output) if output.status.success() => output,
@@ -314,16 +744,17 @@ fn current_terminal_sessions(home: &Path) -> Result<HashMap<u32, PathBuf>, Strin
         Err(error) => return Err(format!("Failed to query tmux terminal sessions: {error}")),
     };
 
-    let mapping_directory = terminal_session_mapping_directory(home);
     Ok(String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter_map(|line| {
-            let (session_name, tty) = line.split_once('|')?;
+            let (session_name, tty, profile) = tmux_pane_fields(line)?;
+            let profile = profile.map(OsStr::new);
             let slot = session_name
                 .strip_prefix(ULTRATERM_SESSION_PREFIX)?
                 .parse::<u32>()
                 .ok()?;
             let tty_name = Path::new(tty).file_name()?;
+            let mapping_directory = terminal_session_mapping_directory(home, profile);
             let mapping = fs::read_to_string(mapping_directory.join(tty_name)).ok()?;
             let session_path = mapping.lines().nth(1).map(PathBuf::from)?;
             Some((slot, session_path))
@@ -401,6 +832,7 @@ fn parse_usage_file(path: &Path) -> Result<FileUsage, String> {
         let Some(raw_usage) = message.get("usage") else {
             continue;
         };
+        let record_model = usage.model.clone();
         let input = number(raw_usage, "input");
         let output = number(raw_usage, "output");
         let cache_read = number(raw_usage, "cacheRead");
@@ -419,7 +851,11 @@ fn parse_usage_file(path: &Path) -> Result<FileUsage, String> {
         };
         usage.total.add(&counts);
         if let Some(timestamp) = timestamp_seconds(value.get("timestamp").and_then(Value::as_str)) {
-            usage.timed.push((timestamp, counts));
+            usage.timed.push(TimedUsage {
+                timestamp,
+                model: record_model,
+                counts,
+            });
         }
     }
     Ok(usage)
@@ -453,17 +889,35 @@ fn subagent_is_complete(path: &Path, usage: &FileUsage) -> bool {
 }
 
 fn subagent_is_active(path: &Path, usage: &FileUsage) -> bool {
-    usage.assistant_records > 0 && !subagent_is_complete(path, usage)
+    path.is_file() && usage.assistant_records > 0 && !subagent_is_complete(path, usage)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
+    use tempfile::tempdir;
 
     #[test]
     fn extracts_session_id_from_omp_path() {
         let path = Path::new("2026-07-18T07-10-31-739Z_019f740f-f93b.jsonl");
         assert_eq!(session_id(path).as_deref(), Some("019f740f-f93b"));
+    }
+
+    #[test]
+    fn tmux_pane_profile_is_read_with_legacy_fallback() {
+        assert_eq!(
+            tmux_pane_fields("ultraterm-matrix-2|/dev/ttys002|gpt-only"),
+            Some(("ultraterm-matrix-2", "/dev/ttys002", Some("gpt-only")))
+        );
+        assert_eq!(
+            tmux_pane_fields("ultraterm-matrix-3|/dev/ttys003|"),
+            Some(("ultraterm-matrix-3", "/dev/ttys003", None))
+        );
+        assert_eq!(
+            tmux_pane_fields("ultraterm-matrix-4|/dev/ttys004"),
+            Some(("ultraterm-matrix-4", "/dev/ttys004", None))
+        );
     }
 
     #[test]
@@ -520,6 +974,10 @@ mod tests {
         assert!(usage.exited);
         assert_eq!(usage.assistant_records, 1);
         assert_eq!(usage.model.as_deref(), Some("openai-codex/gpt-5.6-sol"));
+        assert_eq!(
+            usage.timed[0].model.as_deref(),
+            Some("openai-codex/gpt-5.6-sol")
+        );
         fs::remove_file(transcript).unwrap();
     }
 
@@ -601,25 +1059,186 @@ mod tests {
     }
 
     #[test]
-    fn rolling_windows_include_only_usage_inside_each_boundary() {
-        let now = 2_000_000;
-        let mut usage = FileUsage::default();
+    fn rolling_windows_and_calendar_today_use_different_boundaries() {
+        let now = Local
+            .with_ymd_and_hms(2026, 7, 18, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp();
+        let previous_evening = Local
+            .with_ymd_and_hms(2026, 7, 17, 18, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp();
+        let today_morning = Local
+            .with_ymd_and_hms(2026, 7, 18, 8, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp();
+        let old = now - 8 * SECONDS_PER_DAY;
         let counts = |total| TokenCounts {
             total,
             ..TokenCounts::default()
         };
+        let mut usage = FileUsage::default();
         usage.timed = vec![
-            (now - 60 * 60, counts(1)),
-            (now - 2 * 24 * 60 * 60, counts(2)),
-            (now - 8 * 24 * 60 * 60, counts(4)),
+            TimedUsage {
+                timestamp: previous_evening,
+                model: Some("gpt".to_string()),
+                counts: counts(2),
+            },
+            TimedUsage {
+                timestamp: today_morning,
+                model: Some("kimi".to_string()),
+                counts: counts(1),
+            },
+            TimedUsage {
+                timestamp: old,
+                model: Some("gpt".to_string()),
+                counts: counts(4),
+            },
         ];
         usage.total = counts(7);
 
-        let (past_24_hours, past_7_days, all_time) =
-            aggregate_windows(std::iter::once(&usage), now);
+        let aggregate = aggregate_usage(std::iter::once(&usage), now);
 
-        assert_eq!(past_24_hours.total, 1);
-        assert_eq!(past_7_days.total, 3);
-        assert_eq!(all_time.total, 7);
+        assert_eq!(aggregate.today.total, 1);
+        assert_eq!(aggregate.past_24_hours.total, 3);
+        assert_eq!(aggregate.past_7_days.total, 3);
+        assert_eq!(aggregate.all_time.total, 7);
+    }
+
+    #[test]
+    fn history_is_chronological_and_model_sums_match_each_day() {
+        let first_day = Local
+            .with_ymd_and_hms(2026, 7, 17, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp();
+        let second_day = Local
+            .with_ymd_and_hms(2026, 7, 18, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp();
+        let counts = |total| TokenCounts {
+            total,
+            ..TokenCounts::default()
+        };
+        let mut usage = FileUsage::default();
+        usage.timed = vec![
+            TimedUsage {
+                timestamp: second_day,
+                model: Some("gpt".to_string()),
+                counts: counts(3),
+            },
+            TimedUsage {
+                timestamp: first_day,
+                model: Some("kimi".to_string()),
+                counts: counts(2),
+            },
+            TimedUsage {
+                timestamp: second_day + 60,
+                model: Some("kimi".to_string()),
+                counts: counts(5),
+            },
+        ];
+        usage.total = counts(10);
+
+        let history = aggregate_usage(std::iter::once(&usage), second_day).history;
+
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].date, "2026-07-17");
+        assert_eq!(history[1].date, "2026-07-18");
+        for day in history {
+            assert_eq!(
+                day.models
+                    .iter()
+                    .map(|model| model.usage.total)
+                    .sum::<u64>(),
+                day.usage.total
+            );
+        }
+    }
+
+    #[test]
+    fn timed_records_keep_the_model_active_for_each_record() {
+        let root = tempdir().unwrap();
+        let transcript = root.path().join("models.jsonl");
+        fs::write(
+            &transcript,
+            concat!(
+                "{\"type\":\"model_change\",\"model\":\"openai-codex/gpt-5.6-sol\"}\n",
+                "{\"type\":\"message\",\"timestamp\":\"2026-07-18T12:00:00Z\",\"message\":{\"role\":\"assistant\",\"usage\":{\"totalTokens\":2}}}\n",
+                "{\"type\":\"model_change\",\"model\":\"kimi-coding/k2p5\"}\n",
+                "{\"type\":\"message\",\"timestamp\":\"2026-07-18T12:01:00Z\",\"message\":{\"role\":\"assistant\",\"usage\":{\"totalTokens\":3}}}\n"
+            ),
+        )
+        .unwrap();
+
+        let usage = parse_usage_file(&transcript).unwrap();
+
+        assert_eq!(usage.timed.len(), 2);
+        assert_eq!(
+            usage.timed[0].model.as_deref(),
+            Some("openai-codex/gpt-5.6-sol")
+        );
+        assert_eq!(usage.timed[1].model.as_deref(), Some("kimi-coding/k2p5"));
+    }
+
+    #[test]
+    fn persisted_index_survives_source_deletion_and_manager_reload() {
+        let root = tempdir().unwrap();
+        let home = root.path();
+        let transcript = home.join("session.jsonl");
+        fs::write(
+            &transcript,
+            "{\"type\":\"message\",\"timestamp\":\"2026-07-18T12:00:00Z\",\"message\":{\"role\":\"assistant\",\"model\":\"gpt\",\"usage\":{\"input\":2,\"output\":3}}}\n",
+        )
+        .unwrap();
+        let mut files = HashSet::new();
+        files.insert(transcript.clone());
+        let mut manager = TokenTelemetryManager::default();
+        manager.load_index(home).unwrap();
+        manager.refresh_files(home, &files).unwrap();
+        let now = timestamp_seconds(Some("2026-07-18T13:00:00Z")).unwrap();
+        let before = aggregate_usage(manager.file_cache.values().map(|cached| &cached.usage), now);
+        drop(manager);
+        fs::remove_file(&transcript).unwrap();
+
+        let mut reloaded = TokenTelemetryManager::default();
+        reloaded.load_index(home).unwrap();
+        let after = aggregate_usage(
+            reloaded.file_cache.values().map(|cached| &cached.usage),
+            now,
+        );
+
+        assert_eq!(before.all_time.total, 5);
+        assert_eq!(after.all_time.total, before.all_time.total);
+        assert_eq!(after.history.len(), before.history.len());
+        assert_eq!(after.history[0].usage.total, before.history[0].usage.total);
+        assert_eq!(after.today.total, before.today.total);
+        assert_eq!(
+            after.history[0].models[0].usage.total,
+            before.history[0].models[0].usage.total
+        );
+        assert_eq!(after.history[0].models[0].model, "gpt");
+    }
+
+    #[test]
+    fn legacy_json_registry_paths_still_load() {
+        let root = tempdir().unwrap();
+        let legacy_path = root.path().join("legacy-session.jsonl");
+        let registry = registry_path(root.path());
+        fs::create_dir_all(registry.parent().unwrap()).unwrap();
+        fs::write(
+            registry,
+            serde_json::to_vec(&vec![legacy_path.clone()]).unwrap(),
+        )
+        .unwrap();
+        let mut manager = TokenTelemetryManager::default();
+
+        manager.load_registry(root.path()).unwrap();
+
+        assert!(manager.registered_sessions.contains(&legacy_path));
     }
 }

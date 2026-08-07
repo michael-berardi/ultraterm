@@ -28,12 +28,15 @@
 //!          `data.limits[]` where TOKENS_LIMIT is the 5-hour window and TIME_LIMIT is
 //!          the monthly MCP window. No reset timestamp is confirmed; none is invented.
 
+use std::process::Stdio;
+use std::sync::LazyLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderValue};
+use base64::engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD};
+use base64::Engine as _;
+use reqwest::header::{HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::LazyLock;
 use tokio::task::JoinSet;
 
 const KEYCHAIN_SERVICE: &str = "com.libertydesignstudio.ultraterm";
@@ -89,6 +92,14 @@ impl ProviderId {
             ProviderId::Codex => "provider-usage-codex",
             ProviderId::Claude => "provider-usage-claude",
             ProviderId::Zai => "provider-usage-zai",
+        }
+    }
+
+    fn omp_auth_source(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            ProviderId::Kimi => Some(("--profile=kimi-k3", "kimi-code")),
+            ProviderId::Codex => Some(("--profile=gpt-only", "openai-codex")),
+            ProviderId::Claude | ProviderId::Zai => None,
         }
     }
 }
@@ -269,12 +280,78 @@ pub async fn remove_provider_credential(provider: ProviderId) -> Result<(), Stri
 // Remote fetching
 // ---------------------------------------------------------------------------
 
+fn codex_account_id(access_token: &str) -> Option<String> {
+    let encoded_payload = access_token.split('.').nth(1)?;
+    let payload = URL_SAFE_NO_PAD
+        .decode(encoded_payload)
+        .or_else(|_| URL_SAFE.decode(encoded_payload))
+        .ok()?;
+    let claims: Value = serde_json::from_slice(&payload).ok()?;
+    let claims = claims.as_object()?;
+    let account_id = claims
+        .get("chatgpt_account_id")
+        .or_else(|| {
+            claims
+                .get("https://api.openai.com/auth")
+                .and_then(Value::as_object)
+                .and_then(|auth| auth.get("chatgpt_account_id"))
+        })
+        .or_else(|| {
+            claims
+                .get("organizations")
+                .and_then(Value::as_array)
+                .and_then(|organizations| organizations.first())
+                .and_then(Value::as_object)
+                .and_then(|organization| organization.get("id"))
+        })?
+        .as_str()?
+        .trim();
+    (!account_id.is_empty()).then(|| account_id.to_string())
+}
+
+async fn read_omp_credential(provider: ProviderId) -> Option<StoredCredential> {
+    let (profile_argument, token_provider) = provider.omp_auth_source()?;
+    let omp = crate::resolve_optional_executable("OMP_BIN", "omp", &[])
+        .ok()
+        .flatten()?;
+    let mut command = tokio::process::Command::new(omp);
+    command
+        .args([profile_argument, "token", token_provider])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(REQUEST_TIMEOUT, command.output())
+        .await
+        .ok()?
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let access_token = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    if access_token.is_empty() {
+        return None;
+    }
+    let account_id = match provider {
+        ProviderId::Codex => codex_account_id(&access_token),
+        ProviderId::Kimi | ProviderId::Claude | ProviderId::Zai => None,
+    };
+    Some(StoredCredential {
+        access_token,
+        account_id,
+    })
+}
+
 async fn fetch_provider(
     provider: ProviderId,
     credential: Option<StoredCredential>,
 ) -> ProviderUsage {
-    let Some(credential) = credential else {
-        return ProviderUsage::disconnected(provider);
+    let credential = match credential {
+        Some(credential) => credential,
+        None => match read_omp_credential(provider).await {
+            Some(credential) => credential,
+            None => return ProviderUsage::disconnected(provider),
+        },
     };
     match fetch_remote(provider, &credential).await {
         Ok(usage) => usage,
@@ -356,7 +433,10 @@ async fn fetch_remote(
         .await
         .map_err(|_| format!("{display} returned a response that was not valid JSON."))?;
 
-    let windows = collect_windows(&body, 0);
+    let windows = match provider {
+        ProviderId::Kimi => collect_kimi_windows(&body),
+        ProviderId::Codex | ProviderId::Claude | ProviderId::Zai => collect_windows(&body, 0),
+    };
     let plan = pick_plan(&body);
     let balance = pick_balance(&body);
 
@@ -386,9 +466,11 @@ fn now_epoch_ms() -> i64 {
 }
 
 fn value_f64(value: &Value) -> Option<f64> {
-    value
-        .as_f64()
-        .or_else(|| value.as_str().and_then(|raw| raw.trim().parse::<f64>().ok()))
+    value.as_f64().or_else(|| {
+        value
+            .as_str()
+            .and_then(|raw| raw.trim().parse::<f64>().ok())
+    })
 }
 
 fn value_string(value: &Value) -> Option<String> {
@@ -407,10 +489,7 @@ fn pick_f64(object: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<f6
         .find_map(|key| object.get(*key).and_then(value_f64))
 }
 
-fn pick_value<'a>(
-    object: &'a serde_json::Map<String, Value>,
-    keys: &[&str],
-) -> Option<&'a Value> {
+fn pick_value<'a>(object: &'a serde_json::Map<String, Value>, keys: &[&str]) -> Option<&'a Value> {
     keys.iter().find_map(|key| object.get(*key))
 }
 
@@ -451,7 +530,10 @@ fn epoch_ms(value: &Value) -> Option<i64> {
 
 fn duration_label(seconds: f64) -> String {
     let seconds = seconds as i64;
-    if seconds >= 86_400 && seconds % 86_400 == 0 {
+    // Match the canonical window labels used elsewhere ("Weekly", not "7-day").
+    if seconds == 604_800 {
+        "Weekly".to_string()
+    } else if seconds >= 86_400 && seconds % 86_400 == 0 {
         format!("{}-day", seconds / 86_400)
     } else if seconds >= 3_600 && seconds % 3_600 == 0 {
         format!("{}-hour", seconds / 3_600)
@@ -538,7 +620,9 @@ fn kimi_detail_label(object: &serde_json::Map<String, Value>) -> Option<String> 
     let unit = pick_value(window, &["timeUnit", "time_unit", "unit"])
         .and_then(value_string)
         .unwrap_or_else(|| "hour".to_string());
-    let unit = unit.trim_end_matches('s').to_ascii_lowercase();
+    let unit = unit.to_ascii_lowercase();
+    let unit = unit.strip_prefix("time_unit_").unwrap_or(&unit);
+    let unit = unit.trim_end_matches('s');
     Some(format!("{}-{unit}", duration as i64))
 }
 
@@ -585,19 +669,23 @@ fn parse_window_item(value: &Value, fallback_label: Option<&str>) -> Option<Prov
     let label = pick_value(object, &["label", "name", "title", "default"])
         .and_then(value_string)
         .map(|text| prettify_label(&text))
-        .or_else(|| fallback_label.map(prettify_label))
+        .or_else(|| {
+            pick_f64(
+                object,
+                &[
+                    "limit_window_seconds",
+                    "limitWindowSeconds",
+                    "windowSeconds",
+                ],
+            )
+            .map(duration_label)
+        })
         .or_else(|| {
             pick_value(object, &["type", "window", "kind"])
                 .and_then(value_string)
                 .map(|text| prettify_label(&text))
         })
-        .or_else(|| {
-            pick_f64(
-                object,
-                &["limit_window_seconds", "limitWindowSeconds", "windowSeconds"],
-            )
-            .map(duration_label)
-        })
+        .or_else(|| fallback_label.map(prettify_label))
         .unwrap_or_else(|| "Usage".to_string());
 
     Some(ProviderUsageWindow {
@@ -626,6 +714,35 @@ const CONTAINER_KEYS: &[&str] = &[
     "usage",
     "limits",
 ];
+
+fn collect_kimi_windows(value: &Value) -> Vec<ProviderUsageWindow> {
+    let Some(root) = value.as_object() else {
+        return Vec::new();
+    };
+    let mut windows: Vec<_> = root
+        .get("limits")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| parse_window_item(item, None))
+        .collect();
+
+    if !windows.iter().any(|window| window.label == "Weekly") {
+        if let Some(mut weekly) = root
+            .get("usage")
+            .and_then(|usage| parse_window_item(usage, Some("Weekly")))
+        {
+            weekly.label = "Weekly".to_string();
+            windows.push(weekly);
+        }
+    }
+
+    if windows.is_empty() {
+        collect_windows(value, 0)
+    } else {
+        windows
+    }
+}
 
 /// Depth-first search for usage windows. Handles both arrays of window items
 /// (Kimi, Z.ai) and keyed window objects (Codex primary/secondary, Claude
@@ -737,6 +854,37 @@ mod tests {
     }
 
     #[test]
+    fn omp_auth_fallback_uses_only_matching_named_profiles() {
+        assert_eq!(
+            ProviderId::Kimi.omp_auth_source(),
+            Some(("--profile=kimi-k3", "kimi-code"))
+        );
+        assert_eq!(
+            ProviderId::Codex.omp_auth_source(),
+            Some(("--profile=gpt-only", "openai-codex"))
+        );
+        assert_eq!(ProviderId::Claude.omp_auth_source(), None);
+        assert_eq!(ProviderId::Zai.omp_auth_source(), None);
+    }
+
+    #[test]
+    fn codex_account_id_is_read_from_oauth_access_token_in_memory() {
+        let claims = serde_json::to_vec(&json!({
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "account-test"
+            }
+        }))
+        .unwrap();
+        let payload = URL_SAFE_NO_PAD.encode(claims);
+        let access_token = format!("header.{payload}.signature");
+        assert_eq!(
+            codex_account_id(&access_token).as_deref(),
+            Some("account-test")
+        );
+        assert_eq!(codex_account_id("not-a-jwt"), None);
+    }
+
+    #[test]
     fn codex_primary_secondary_windows() {
         let body = json!({
             "plan_type": "plus",
@@ -766,6 +914,22 @@ mod tests {
         assert_eq!(windows[0].resets_at, Some(1_761_193_452_000));
         assert_eq!(pick_plan(&body).as_deref(), Some("plus"));
         assert_eq!(pick_balance(&body).as_deref(), Some("12.5"));
+    }
+
+    #[test]
+    fn codex_primary_window_uses_reported_weekly_duration() {
+        let body = json!({
+            "rate_limit": {
+                "primary_window": {
+                    "used_percent": 97,
+                    "limit_window_seconds": 604800
+                },
+                "secondary_window": null
+            }
+        });
+        let windows = collect_windows(&body, 0);
+        assert_eq!(windows.len(), 1);
+        assert_eq!(window_percent(&windows, "Weekly"), Some(97.0));
     }
 
     #[test]
@@ -837,6 +1001,41 @@ mod tests {
         assert!(windows[0].resets_at.is_some());
         assert_eq!(windows[1].resets_at, Some(1_764_547_200_000));
         assert_eq!(pick_plan(&body).as_deref(), Some("kimi-for-coding"));
+    }
+
+    #[test]
+    fn kimi_root_usage_is_weekly_alongside_five_hour_limit() {
+        let body = json!({
+            "usage": {
+                "limit": 500,
+                "remaining": 400,
+                "reset_at": "2025-12-08T00:00:00Z"
+            },
+            "limits": [
+                {
+                    "detail": {
+                        "limit": 100,
+                        "remaining": 25,
+                        "reset_in": 1800
+                    },
+                    "window": {
+                        "duration": 5,
+                        "timeUnit": "TIME_UNIT_HOUR"
+                    }
+                }
+            ]
+        });
+        let windows = collect_kimi_windows(&body);
+        assert_eq!(windows.len(), 2);
+        assert_eq!(window_percent(&windows, "5-hour"), Some(75.0));
+        assert_eq!(window_percent(&windows, "Weekly"), Some(20.0));
+        assert_eq!(
+            windows
+                .iter()
+                .find(|window| window.label == "Weekly")
+                .and_then(|window| window.resets_at),
+            Some(1_765_152_000_000)
+        );
     }
 
     #[test]

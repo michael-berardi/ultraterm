@@ -2,9 +2,18 @@ import { describe, expect, it, vi } from "vitest";
 import {
   cleanupOrphanTmuxSlots,
   defaultTerminalSlots,
+  readLastLaunchProfile,
+  readTerminalLaunchRows,
   reconnectTerminalSlot,
-  readTerminalSlots,
 } from "./useTerminalWorkspace";
+
+function stubStorage(value: string | null): void {
+  vi.stubGlobal("window", {
+    localStorage: {
+      getItem: vi.fn().mockReturnValue(value),
+    },
+  });
+}
 
 describe("defaultTerminalSlots", () => {
   it("returns sequential slots starting at 1 up to the target count", () => {
@@ -20,26 +29,61 @@ describe("defaultTerminalSlots", () => {
   });
 });
 
-describe("readTerminalSlots", () => {
-  it("reads saved slots from localStorage and clamps them to valid range", () => {
-    vi.stubGlobal("window", {
-      localStorage: {
-        getItem: vi.fn().mockReturnValue(
-          JSON.stringify([3, 1, 8, 0, 9, 2, 2]),
-        ),
-      },
-    });
-    expect(readTerminalSlots(8)).toEqual([1, 2, 3, 8]);
+describe("readTerminalLaunchRows", () => {
+  it("reads stored slot+profile rows and clamps them to valid range", () => {
+    stubStorage(JSON.stringify([
+      { slot: 3, launchProfile: "kimi-k3" },
+      { slot: 1, launchProfile: "gpt-only" },
+      { slot: 9, launchProfile: "gpt-only" },
+      { slot: 0, launchProfile: "default" },
+      { slot: 2, launchProfile: "default" },
+      { slot: 2, launchProfile: "kimi-k3" },
+    ]));
+
+    expect(readTerminalLaunchRows(8)).toEqual([
+      { slot: 1, launchProfile: "gpt-only" },
+      { slot: 2, launchProfile: "kimi-k3" },
+      { slot: 3, launchProfile: "kimi-k3" },
+    ]);
+  });
+
+  it("migrates legacy slot-only arrays to default-profile rows", () => {
+    stubStorage(JSON.stringify([3, 1, 8, 0, 9, 2, 2]));
+
+    expect(readTerminalLaunchRows(8)).toEqual([
+      { slot: 1, launchProfile: "default" },
+      { slot: 2, launchProfile: "default" },
+      { slot: 3, launchProfile: "default" },
+      { slot: 8, launchProfile: "default" },
+    ]);
+  });
+
+  it("falls back to the default profile for unknown profile ids", () => {
+    stubStorage(JSON.stringify([{ slot: 1, launchProfile: "not-a-profile" }]));
+
+    expect(readTerminalLaunchRows(8)).toEqual([
+      { slot: 1, launchProfile: "default" },
+    ]);
   });
 
   it("returns null when nothing is saved", () => {
-    vi.stubGlobal("window", {
-      localStorage: {
-        getItem: vi.fn().mockReturnValue(null),
-      },
-    });
+    stubStorage(null);
 
-    expect(readTerminalSlots(8)).toBeNull();
+    expect(readTerminalLaunchRows(8)).toBeNull();
+  });
+});
+
+describe("readLastLaunchProfile", () => {
+  it("returns the stored profile when it is a known id", () => {
+    stubStorage("gpt-only");
+
+    expect(readLastLaunchProfile()).toBe("gpt-only");
+  });
+
+  it("falls back to default for missing or unknown values", () => {
+    stubStorage("bogus");
+
+    expect(readLastLaunchProfile()).toBe("default");
   });
 });
 
