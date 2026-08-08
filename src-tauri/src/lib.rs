@@ -444,19 +444,29 @@ fn reader_thread(
 
 fn cleanup_thread(rx: mpsc::Receiver<String>, manager: Arc<Mutex<SessionManager>>) {
     while let Ok(id) = rx.recv() {
-        let mut manager = match manager.lock() {
-            Ok(manager) => manager,
-            Err(error) => {
-                eprintln!("[ultraterm] session manager lock poisoned during cleanup: {error}");
-                break;
-            }
+        // Remove the session under the lock, then release it before joining
+        // any threads — joins can block and must never hold the manager lock.
+        let session = {
+            let mut manager = match manager.lock() {
+                Ok(manager) => manager,
+                Err(error) => {
+                    eprintln!("[ultraterm] session manager lock poisoned during cleanup: {error}");
+                    break;
+                }
+            };
+            manager.sessions.remove(&id)
         };
-        if let Some(mut session) = manager.sessions.remove(&id) {
+        if let Some(mut session) = session {
             let _ = session.child.kill();
             if let Some(handle) = session.reader_handle.take() {
                 let _ = handle.join();
             }
             if let Some(handle) = session.writer_handle.take() {
+                // The writer thread exits only when the channel closes, so the
+                // session's sender must be dropped before joining. Session
+                // implements Drop, so swap the sender out instead of moving it.
+                let (dummy_tx, _dummy_rx) = mpsc::channel::<Vec<u8>>();
+                drop(std::mem::replace(&mut session.writer, dummy_tx));
                 let _ = handle.join();
             }
         }
@@ -530,7 +540,21 @@ fn command_search_path() -> Result<OsString, String> {
     let inherited =
         nonempty_env_os("PATH").unwrap_or_else(|| OsString::from(DEFAULT_COMMAND_SEARCH_PATH));
     let configured = nonempty_env_os("ULTRATERM_PATH");
-    combine_command_search_path(configured.as_deref(), &inherited)
+    let combined = combine_command_search_path(configured.as_deref(), &inherited)?;
+    // Finder/Dock launches inherit a bare launchd PATH without user bin dirs;
+    // append the conventional locations so user-installed tools (omp, omp-safe)
+    // resolve regardless of how the app was started.
+    let Ok(home) = home_dir() else {
+        return Ok(combined);
+    };
+    let mut entries: Vec<PathBuf> = std::env::split_paths(&combined).collect();
+    for candidate in [home.join("bin"), home.join(".local/bin")] {
+        if candidate.is_dir() && !entries.contains(&candidate) {
+            entries.push(candidate);
+        }
+    }
+    std::env::join_paths(entries)
+        .map_err(|error| format!("Command search path could not include user bin dirs: {error}"))
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -837,10 +861,17 @@ fn build_command(
     if launch_omp {
         let session_name = persistent_session_name(slot);
         let path = command_search_path()?;
+        // Finder/Dock launches inherit a bare launchd PATH without the user's
+        // bin dirs, so probe the conventional install locations explicitly.
+        let home_fallbacks: Vec<PathBuf> = home_dir()
+            .map(|home| vec![home.join("bin/omp-safe"), home.join(".local/bin/omp-safe")])
+            .unwrap_or_default();
+        let home_fallback_refs: Vec<&Path> =
+            home_fallbacks.iter().map(PathBuf::as_path).collect();
         let omp_path = resolve_optional_executable(
             "ULTRATERM_OMP_LAUNCHER",
             "omp-safe",
-            &[],
+            &home_fallback_refs,
         )?
         .ok_or_else(|| {
             "OMP launcher not found. Install scripts/omp-safe on ULTRATERM_PATH or PATH, or set ULTRATERM_OMP_LAUNCHER to its executable path."

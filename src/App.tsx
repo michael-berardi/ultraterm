@@ -22,6 +22,7 @@ import {
   TERMINAL_SCROLLBACK,
   type EffectMode,
   type LaunchProfileId,
+  type TerminalController,
   type ThemeId,
   type TerminalPreferences,
   type VoiceInputState,
@@ -44,6 +45,8 @@ const PANE_REFLOW_DURATION_MILLISECONDS = 220;
 const PANE_REFLOW_REVEAL_SCALE = 0.985;
 const PANE_MOTION_EASING = "cubic-bezier(0.22, 1, 0.36, 1)";
 const MAXIMUM_TERMINAL_FONT_SIZE = 18;
+const BOOT_SPLASH_MIN_MS = 650;
+const BOOT_SPLASH_MAX_MS = 5000;
 
 function readTerminalPreferences(): TerminalPreferences {
   try {
@@ -160,8 +163,17 @@ function useWindowGeometryPersistence(): void {
       }
 
       if (disposed) return;
-      await appWindow.show();
-      await appWindow.setFocus();
+      // Reveal only after the boot splash has painted, so the window never
+      // flashes a bare black frame.
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (disposed) return;
+          void (async () => {
+            await appWindow.show();
+            await appWindow.setFocus();
+          })();
+        });
+      });
       [unlistenMoved, unlistenResized] = await Promise.all([
         appWindow.onMoved(queueSave),
         appWindow.onResized(queueSave),
@@ -443,9 +455,53 @@ function App(): ReactElement {
     };
   }, []);
 
+  const [bootStarted, setBootStarted] = useState(false);
+  const [splash, setSplash] = useState<"visible" | "exiting" | "gone">("visible");
+  const [mountedControllers, setMountedControllers] = useState<ReadonlySet<string>>(new Set());
+  const bootStartedAt = useRef(Date.now());
+
   useEffect(() => {
+    setBootStarted(true);
     void workspace.bootstrap(DEFAULT_TERMINAL_COUNT);
   }, [workspace.bootstrap]);
+
+  const handleControllerReady = useCallback((id: string, controller: TerminalController | null) => {
+    workspace.registerController(id, controller);
+    setMountedControllers((current) => {
+      const has = current.has(id);
+      if (controller !== null && !has) return new Set(current).add(id);
+      if (controller === null && has) {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      }
+      return current;
+    });
+  }, [workspace]);
+
+  // The splash lifts only when the workspace is genuinely ready: bootstrap
+  // finished and every restored terminal has mounted its xterm controller.
+  const workspaceReady = bootStarted
+    && !workspace.isBooting
+    && workspace.sessions.every((session) => mountedControllers.has(session.id));
+
+  useEffect(() => {
+    if (!workspaceReady) return;
+    const elapsed = Date.now() - bootStartedAt.current;
+    const remaining = Math.max(0, BOOT_SPLASH_MIN_MS - elapsed);
+    const timer = window.setTimeout(() => {
+      setSplash((current) => (current === "visible" ? "exiting" : current));
+    }, remaining);
+    return () => window.clearTimeout(timer);
+  }, [workspaceReady]);
+
+  useEffect(() => {
+    // Hard cap: a stuck terminal must never trap the splash.
+    const timer = window.setTimeout(() => {
+      setSplash((current) => (current === "visible" ? "exiting" : current));
+    }, BOOT_SPLASH_MAX_MS);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     const availableIds = new Set(workspace.sessions.map((session) => session.id));
@@ -1106,6 +1162,11 @@ function App(): ReactElement {
     "--pane-columns": grid.columns,
     "--pane-rows": grid.rows,
   } as CSSProperties;
+  const splashStatus = workspace.isBooting
+    ? "Restoring your workspace…"
+    : workspaceReady
+      ? "Ready"
+      : "Preparing terminals…";
 
 
   return (
@@ -1169,8 +1230,9 @@ function App(): ReactElement {
               maximized={session.id === layoutMaximizedId}
               exiting={exitingIds.has(session.id)}
               reducedMotion={prefersReducedMotion}
+              suppressEntrance={splash !== "gone"}
               onActivate={selectTerminal}
-              onControllerReady={workspace.registerController}
+              onControllerReady={handleControllerReady}
               onRestart={(id) => void workspace.restartPane(id)}
             />
           ))}
@@ -1230,6 +1292,24 @@ function App(): ReactElement {
         }}
         onClose={() => setControllerOpen(false)}
       />
+
+      {splash !== "gone" && (
+        <div
+          className={`boot-splash${splash === "exiting" ? " is-exiting" : ""}`}
+          role="status"
+          aria-label="Loading UltraTerm"
+          onTransitionEnd={(event) => {
+            if (event.target === event.currentTarget && splash === "exiting") setSplash("gone");
+          }}
+        >
+          <div className="boot-splash__card">
+            <strong className="boot-splash__wordmark">UltraTerm</strong>
+            <small className="boot-splash__byline">By Implose Labs</small>
+            <span className="boot-splash__bar" aria-hidden="true"><span /></span>
+            <p className="boot-splash__status">{splashStatus}</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

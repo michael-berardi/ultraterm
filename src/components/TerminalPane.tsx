@@ -23,6 +23,8 @@ interface TerminalPaneProps {
   maximized: boolean;
   exiting: boolean;
   reducedMotion: boolean;
+  /** Mount without the entrance animation (used behind the boot splash). */
+  suppressEntrance?: boolean;
   onActivate: (id: string) => void;
   onControllerReady: (id: string, controller: TerminalController | null) => void;
   onRestart: (id: string) => void;
@@ -138,12 +140,13 @@ export function TerminalPane({
   maximized,
   exiting,
   reducedMotion,
+  suppressEntrance = false,
   onActivate,
   onControllerReady,
   onRestart,
 }: TerminalPaneProps): ReactElement {
   const hostRef = useRef<HTMLDivElement>(null);
-  const [entering, setEntering] = useState(!reducedMotion);
+  const [entering, setEntering] = useState(!reducedMotion && !suppressEntrance);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const preferencesRef = useRef(preferences);
