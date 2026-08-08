@@ -84,6 +84,12 @@ export async function reconnectTerminalSlot<T>(
   return launch(slot);
 }
 
+export function ompCommandInput(command: "/new" | "/exit" | "/resume"): string {
+  // Clear any partially typed prompt first. Without this, clicking a command
+  // button can append `/new` to pending input and appear to do nothing.
+  return `\u0015${command}\r`;
+}
+
 /**
  * Reads persisted terminal launch rows. The legacy format stored a bare array of
  * slot numbers; those entries migrate in place to the `default` launch profile.
@@ -148,9 +154,42 @@ const DEFAULT_TOKEN_TELEMETRY: TokenTelemetry = {
   updatedAt: 0,
 };
 
-interface PendingOutput {
+export interface PendingOutput {
   bytes: number;
   chunks: Uint8Array[];
+}
+
+export function appendCappedOutput(
+  buffer: PendingOutput,
+  chunk: Uint8Array,
+  maxBytes = MAX_PENDING_OUTPUT_BYTES,
+): void {
+  if (maxBytes <= 0) {
+    buffer.bytes = 0;
+    buffer.chunks = [];
+    return;
+  }
+
+  if (chunk.byteLength >= maxBytes) {
+    buffer.bytes = maxBytes;
+    buffer.chunks = [chunk.slice(chunk.byteLength - maxBytes)];
+    return;
+  }
+
+  buffer.chunks.push(chunk);
+  buffer.bytes += chunk.byteLength;
+
+  while (buffer.bytes > maxBytes && buffer.chunks.length > 0) {
+    const overflow = buffer.bytes - maxBytes;
+    const oldest = buffer.chunks[0];
+    if (oldest.byteLength <= overflow) {
+      buffer.chunks.shift();
+      buffer.bytes -= oldest.byteLength;
+      continue;
+    }
+    buffer.chunks[0] = oldest.slice(overflow);
+    buffer.bytes -= overflow;
+  }
 }
 
 export function useTerminalWorkspace(sessionCap: number) {
@@ -257,8 +296,7 @@ export function useTerminalWorkspace(sessionCap: number) {
             buffer = { bytes: 0, chunks: [], frame: null };
             writeBuffers.current.set(payload.id, buffer);
           }
-          buffer.chunks.push(bytes);
-          buffer.bytes += bytes.byteLength;
+          appendCappedOutput(buffer, bytes);
           if (buffer.frame === null) {
             buffer.frame = window.requestAnimationFrame(() => {
               writeBuffers.current.delete(payload.id);
@@ -267,8 +305,9 @@ export function useTerminalWorkspace(sessionCap: number) {
                 // Controller vanished between schedule and flush: keep the
                 // bytes in pendingOutput so a re-registered pane still gets them.
                 const pending = pendingOutput.current.get(payload.id) ?? { bytes: 0, chunks: [] };
-                pending.chunks.push(...buffer.chunks);
-                pending.bytes += buffer.bytes;
+                for (const chunk of buffer.chunks) {
+                  appendCappedOutput(pending, chunk);
+                }
                 pendingOutput.current.set(payload.id, pending);
                 return;
               }
@@ -285,13 +324,7 @@ export function useTerminalWorkspace(sessionCap: number) {
         }
 
         const pending = pendingOutput.current.get(payload.id) ?? { bytes: 0, chunks: [] };
-        pending.chunks.push(bytes);
-        pending.bytes += bytes.byteLength;
-
-        while (pending.bytes > MAX_PENDING_OUTPUT_BYTES && pending.chunks.length > 1) {
-          pending.bytes -= pending.chunks.shift()?.byteLength ?? 0;
-        }
-
+        appendCappedOutput(pending, bytes);
         pendingOutput.current.set(payload.id, pending);
       }),
       listen<TerminalExitEvent>("terminal-exit", ({ payload }) => {
@@ -669,20 +702,8 @@ export function useTerminalWorkspace(sessionCap: number) {
   }, [sessions]);
 
   const sendOmpCommand = useCallback(async (id: string, command: "/new" | "/exit" | "/resume") => {
-    setNotice(null);
-    const session = sessions.find((candidate) => candidate.id === id);
-    if (!session || session.status !== "live") {
-      setNotice("That terminal is not connected.");
-      return;
-    }
-    try {
-      const encoded = bytesToBase64(TEXT_ENCODER.encode(`${command}\r`));
-      await writeToSession(id, encoded);
-      controllers.current.get(id)?.focus();
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
-    }
-  }, [sessions]);
+    await sendTerminalInput(id, ompCommandInput(command));
+  }, [sendTerminalInput]);
   const dismissNotice = useCallback(() => setNotice(null), []);
 
   return {

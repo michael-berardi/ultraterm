@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { createPortal } from "react-dom";
 import { ChartColumn, X } from "lucide-react";
+import { formatCacheHitPercent } from "../lib/tokenTelemetry";
 import type { ThemeId, TokenCounts, TokenTelemetry } from "../types";
 
 interface HistoryModalProps {
@@ -248,6 +249,10 @@ export function HistoryModal({
                 <dd>{totals.cacheRead.toLocaleString()}</dd>
               </div>
               <div>
+                <dt>Cache hit</dt>
+                <dd>{formatCacheHitPercent(totals)}</dd>
+              </div>
+              <div>
                 <dt>Cache write</dt>
                 <dd>{totals.cacheWrite.toLocaleString()}</dd>
               </div>
@@ -339,6 +344,7 @@ export function HistoryModal({
                     <th scope="col">Input</th>
                     <th scope="col">Output</th>
                     <th scope="col">Cached</th>
+                    <th scope="col">Cache hit</th>
                     <th scope="col">Total</th>
                   </tr>
                 </thead>
@@ -366,6 +372,7 @@ export function HistoryModal({
                       <td>{day.usage.input.toLocaleString()}</td>
                       <td>{day.usage.output.toLocaleString()}</td>
                       <td>{(day.usage.cacheRead + day.usage.cacheWrite).toLocaleString()}</td>
+                      <td>{formatCacheHitPercent(day.usage)}</td>
                       <td>{day.usage.total.toLocaleString()}</td>
                     </tr>
                   ))}

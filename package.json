@@ -1,7 +1,7 @@
 {
   "name": "ultraterm",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "A unified, display-aware OMP terminal command matrix.",
   "type": "module",
   "scripts": {
@@ -9,7 +9,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "check": "tsc --noEmit && cargo check --manifest-path src-tauri/Cargo.toml",
-    "test": "vitest run && cargo test --manifest-path src-tauri/Cargo.toml",
+    "test": "./scripts/test-omp-safe.sh && vitest run && cargo test --manifest-path src-tauri/Cargo.toml",
     "app:dev": "tauri dev",
     "app:build": "tauri build",
     "pkg:build": "./scripts/build-pkg.sh",

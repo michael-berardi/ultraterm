@@ -27,10 +27,6 @@ CONFIGURED_OMP_BIN="${OMP_BIN:-}"
 OMP_BIN="$(resolve_executable "$CONFIGURED_OMP_BIN" omp)"
 OMP_SESSION="${OMP_TMUX_SESSION:-omp}"
 OMP_PROFILE="${OMP_PROFILE:-}"
-OMP_PROFILE_ARGS=()
-if [ -n "$OMP_PROFILE" ]; then
-  OMP_PROFILE_ARGS=("--profile=$OMP_PROFILE")
-fi
 
 CONFIGURED_TMUX_BIN="${TMUX_BIN:-}"
 TMUX_BIN="$(resolve_executable "$CONFIGURED_TMUX_BIN" tmux)"
@@ -68,30 +64,74 @@ hash_signature() {
   fi
 }
 
-omp_signature() {
+omp_identity_signature() {
   {
     printf 'bin=%s\n' "$OMP_BIN"
-    printf 'version=%s\n' "$(omp_version)"
     printf 'profile=%s\n' "${OMP_PROFILE:-<omp-default>}"
   } | hash_signature
+}
+
+run_omp_once() {
+  if [ -n "$OMP_PROFILE" ]; then
+    "$OMP_BIN" "--profile=$OMP_PROFILE" "$@"
+  else
+    "$OMP_BIN" "$@"
+  fi
+}
+
+exec_omp_with_env() {
+  if [ -n "$OMP_PROFILE" ]; then
+    exec env OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-${OPENROUTER_OPENCODE_API_KEY:-}}" \
+      OPENROUTER_OPENCODE_API_KEY="${OPENROUTER_OPENCODE_API_KEY:-${OPENROUTER_API_KEY:-}}" \
+      "$OMP_BIN" "--profile=$OMP_PROFILE" "$@"
+  else
+    exec env OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-${OPENROUTER_OPENCODE_API_KEY:-}}" \
+      OPENROUTER_OPENCODE_API_KEY="${OPENROUTER_OPENCODE_API_KEY:-${OPENROUTER_API_KEY:-}}" \
+      "$OMP_BIN" "$@"
+  fi
 }
 
 run_resilient() {
   local exit_code=0
   local resume=0
+  local restart_count=0
+  local max_restarts="${OMP_MAX_RESTARTS:-5}"
+  local base_delay="${OMP_RESTART_DELAY_SECONDS:-1}"
+  local delay
+
+  if ! [[ "$max_restarts" =~ ^[0-9]+$ ]] || ! [[ "$base_delay" =~ ^[0-9]+$ ]]; then
+    echo "[omp-safe] OMP_MAX_RESTARTS and OMP_RESTART_DELAY_SECONDS must be non-negative integers" >&2
+    return 64
+  fi
 
   while true; do
     if [ "$resume" -eq 1 ]; then
-      "$OMP_BIN" "${OMP_PROFILE_ARGS[@]}" --continue "$@" || exit_code=$?
+      run_omp_once --continue "$@" || exit_code=$?
     else
-      "$OMP_BIN" "${OMP_PROFILE_ARGS[@]}" "$@" || exit_code=$?
+      run_omp_once "$@" || exit_code=$?
     fi
     if [ "$exit_code" -eq 0 ]; then
       return 0
     fi
 
-    printf '\n[omp-safe] OMP exited unexpectedly (code %s). Restoring this session...\n' "$exit_code" >&2
-    sleep 1
+    case "$exit_code" in
+      2|64|78|126|127)
+        printf '\n[omp-safe] OMP stopped with a permanent error (code %s); automatic restore cancelled.\n' "$exit_code" >&2
+        return "$exit_code"
+        ;;
+    esac
+
+    if [ "$restart_count" -ge "$max_restarts" ]; then
+      printf '\n[omp-safe] OMP restore stopped after %s retries (last code %s).\n' "$restart_count" "$exit_code" >&2
+      return "$exit_code"
+    fi
+
+    restart_count=$((restart_count + 1))
+    delay=$((base_delay * (1 << (restart_count - 1))))
+    if [ "$delay" -gt 16 ]; then delay=16; fi
+    printf '\n[omp-safe] OMP exited unexpectedly (code %s). Restore attempt %s/%s in %ss...\n' \
+      "$exit_code" "$restart_count" "$max_restarts" "$delay" >&2
+    if [ "$delay" -gt 0 ]; then sleep "$delay"; fi
     resume=1
     exit_code=0
   done
@@ -138,33 +178,32 @@ case "${1:-}" in
     ;;
   __worker)
     shift
+    set +e
     run_resilient "$@"
-    exit $?
+    worker_exit=$?
+    set -e
+    exit "$worker_exit"
     ;;
   signature)
-    printf 'OMP safe signature config:\n'
+    printf 'OMP safe identity config:\n'
     printf '  bin=%s\n' "$OMP_BIN"
     printf '  version=%s\n' "$(omp_version)"
     printf '  profile=%s\n' "${OMP_PROFILE:-<omp-default>}"
-    printf '  hash=%s\n' "$(omp_signature)"
+    printf '  hash=%s\n' "$(omp_identity_signature)"
     exit 0
     ;;
 esac
 
 if [ -z "$TMUX_BIN" ]; then
   echo "[omp-safe] tmux not installed — falling back to bare omp" >&2
-  exec env OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-${OPENROUTER_OPENCODE_API_KEY:-}}" \
-    OPENROUTER_OPENCODE_API_KEY="${OPENROUTER_OPENCODE_API_KEY:-${OPENROUTER_API_KEY:-}}" \
-    "$OMP_BIN" "${OMP_PROFILE_ARGS[@]}" "$@"
+  exec_omp_with_env "$@"
 fi
 
 if [ -n "${TMUX:-}" ]; then
-  exec env OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-${OPENROUTER_OPENCODE_API_KEY:-}}" \
-    OPENROUTER_OPENCODE_API_KEY="${OPENROUTER_OPENCODE_API_KEY:-${OPENROUTER_API_KEY:-}}" \
-    "$OMP_BIN" "${OMP_PROFILE_ARGS[@]}" "$@"
+  exec_omp_with_env "$@"
 fi
 
-OMP_SIGNATURE="$(omp_signature)"
+OMP_IDENTITY="$(omp_identity_signature)"
 OMP_VERSION="$(omp_version)"
 ULTRATERM_SCROLLBACK_LINES=5000
 
@@ -178,8 +217,13 @@ configure_session_chrome() {
   esac
 }
 
-persist_session_profile() {
+persist_session_identity() {
   "$TMUX_BIN" set-option -q -t "$OMP_SESSION" @omp-profile "$OMP_PROFILE" 2>/dev/null || true
+  "$TMUX_BIN" set-option -q -t "$OMP_SESSION" @omp-safe-bin "$OMP_BIN" 2>/dev/null || true
+  "$TMUX_BIN" set-option -q -t "$OMP_SESSION" @omp-safe-identity "$OMP_IDENTITY" 2>/dev/null || true
+  "$TMUX_BIN" set-option -q -t "$OMP_SESSION" @omp-safe-signature "$OMP_IDENTITY" 2>/dev/null || true
+  "$TMUX_BIN" set-option -q -t "$OMP_SESSION" @matrix-safe-signature "$OMP_IDENTITY" 2>/dev/null || true
+  "$TMUX_BIN" set-option -q -t "$OMP_SESSION" @omp-safe-version "$OMP_VERSION" 2>/dev/null || true
 }
 
 create_session() {
@@ -200,14 +244,21 @@ create_session() {
 }
 
 if "$TMUX_BIN" has-session -t "$OMP_SESSION" 2>/dev/null; then
+  existing_identity="$("$TMUX_BIN" show-options -qv -t "$OMP_SESSION" @omp-safe-identity 2>/dev/null || true)"
   existing_signature="$("$TMUX_BIN" show-options -qv -t "$OMP_SESSION" @omp-safe-signature 2>/dev/null || true)"
-  if [ "$existing_signature" != "$OMP_SIGNATURE" ]; then
-    echo "[omp-safe] Session '$OMP_SESSION' was created with a different OMP binary, version, or profile." >&2
+  existing_profile="$("$TMUX_BIN" show-options -qv -t "$OMP_SESSION" @omp-profile 2>/dev/null || true)"
+  if { [ -n "$existing_identity" ] && [ "$existing_identity" != "$OMP_IDENTITY" ]; } \
+    || { [ -z "$existing_identity" ] && [ -z "$existing_signature" ]; } \
+    || { [ -z "$existing_identity" ] && [ "$existing_profile" != "$OMP_PROFILE" ]; }; then
+    echo "[omp-safe] Session '$OMP_SESSION' was created with a different OMP binary or profile." >&2
     echo "[omp-safe] Preserve it under another name or kill it before attaching with the current configuration." >&2
     exit 78
   fi
   configure_session_chrome
-  persist_session_profile
+  # Legacy sessions stored a version-sensitive signature. A matching profile is
+  # enough to migrate them because attaching to an existing tmux client does not
+  # execute the newly installed OMP binary. Future upgrades keep this identity.
+  persist_session_identity
   exec "$TMUX_BIN" attach -t "$OMP_SESSION"
 fi
 
@@ -224,8 +275,5 @@ cmd=$(tmux_shell_quote env \
   "${worker_command[@]}")
 create_session "$cmd"
 configure_session_chrome
-"$TMUX_BIN" set-option -q -t "$OMP_SESSION" @omp-safe-signature "$OMP_SIGNATURE" 2>/dev/null || true
-"$TMUX_BIN" set-option -q -t "$OMP_SESSION" @matrix-safe-signature "$OMP_SIGNATURE" 2>/dev/null || true
-"$TMUX_BIN" set-option -q -t "$OMP_SESSION" @omp-safe-version "$OMP_VERSION" 2>/dev/null || true
-persist_session_profile
+persist_session_identity
 exec "$TMUX_BIN" attach -t "$OMP_SESSION"

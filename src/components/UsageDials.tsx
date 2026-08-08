@@ -10,31 +10,35 @@ import {
 import type { ProviderUsage, ProviderUsageWindow } from "../types";
 
 const LOW_REMAINING_THRESHOLD = 10;
-const ARC_PATH = "M 12 54 A 38 38 0 0 1 88 54";
-
-const TICKS = [0, 25, 50, 75, 100].map((fraction) => {
-  const angle = ((180 - fraction * 1.8) * Math.PI) / 180;
-  const major = fraction % 50 === 0;
-  const inner = major ? 31 : 32.5;
-  return {
-    fraction,
-    major,
-    x1: 50 + inner * Math.cos(angle),
-    y1: 54 - inner * Math.sin(angle),
-    x2: 50 + 35 * Math.cos(angle),
-    y2: 54 - 35 * Math.sin(angle),
-  };
-});
 
 /** Quota dials lead with the weekly window when the provider reports one. */
-function displayWindow(usage: ProviderUsage): ProviderUsageWindow | null {
+export function displayWindow(usage: ProviderUsage): ProviderUsageWindow | null {
   if (usage.windows.length === 0) return null;
   const weekly = usage.windows.find((window) => /week|7[-\s]?day/i.test(window.label));
   return weekly ?? primaryWindow(usage);
 }
 
-function remainingPercent(window: ProviderUsageWindow): number {
+export function remainingPercent(window: ProviderUsageWindow): number {
   return Math.min(100, Math.max(0, 100 - window.usedPercent));
+}
+
+export function formatUsageWindowLabel(label: string): string {
+  const normalized = label.trim().toLowerCase().replace(/[_\s]+/g, "-");
+  const duration = normalized.match(/^(\d+)-(minute|hour|day)s?$/);
+  if (!duration) return label;
+  const value = Number(duration[1]);
+  const unit = duration[2];
+  if (unit === "minute" && value % 60 === 0) {
+    const hours = value / 60;
+    return `${hours} ${hours === 1 ? "hour" : "hours"}`;
+  }
+  return `${value} ${value === 1 ? unit : `${unit}s`}`;
+}
+
+export function usagePlanLine(usage: ProviderUsage): string {
+  const balance = usage.balance?.trim();
+  const meaningfulBalance = balance && !/^0(?:\.0+)?$/.test(balance) ? balance : null;
+  return [usage.plan, meaningfulBalance].filter(Boolean).join(" · ");
 }
 
 function dialAriaSummary(usage: ProviderUsage, window: ProviderUsageWindow): string {
@@ -52,7 +56,7 @@ function UsageDial({ usage }: { usage: ProviderUsage }): ReactElement | null {
   const remaining = remainingPercent(window);
   const danger = remaining <= LOW_REMAINING_THRESHOLD;
   const secondaryWindows = usage.windows.filter((item) => item !== window).slice(0, 2);
-  const planLine = [usage.plan, usage.balance].filter(Boolean).join(" · ");
+  const planLine = usagePlanLine(usage);
 
   return (
     <div className="usage-dial usage-dial--connected" role="group" aria-label={dialAriaSummary(usage, window)}>
@@ -65,22 +69,14 @@ function UsageDial({ usage }: { usage: ProviderUsage }): ReactElement | null {
       </div>
 
       <div className="usage-dial__gauge-wrap">
-        <svg className="usage-dial__gauge" viewBox="0 0 100 62" aria-hidden="true" focusable="false">
-          {TICKS.map((tick) => (
-            <line
-              key={tick.fraction}
-              className={`usage-dial__tick${tick.major ? " usage-dial__tick--major" : ""}`}
-              x1={tick.x1}
-              y1={tick.y1}
-              x2={tick.x2}
-              y2={tick.y2}
-            />
-          ))}
-          <path className="usage-dial__track" d={ARC_PATH} pathLength={100} fill="none" />
+        <svg className="usage-dial__gauge" viewBox="0 0 100 100" aria-hidden="true" focusable="false">
+          <circle className="usage-dial__track" cx="50" cy="50" r="38" pathLength={100} fill="none" />
           {remaining > 0 && (
-            <path
+            <circle
               className={`usage-dial__value${danger ? " is-danger" : ""}`}
-              d={ARC_PATH}
+              cx="50"
+              cy="50"
+              r="38"
               pathLength={100}
               fill="none"
               strokeDasharray={`${remaining} 100`}
@@ -89,7 +85,6 @@ function UsageDial({ usage }: { usage: ProviderUsage }): ReactElement | null {
         </svg>
         <div className="usage-dial__reading">
           <strong className="usage-dial__percent">{Math.round(remaining)}%</strong>
-          <span className="usage-dial__window">{window.label} remaining</span>
         </div>
       </div>
 
@@ -101,21 +96,23 @@ function UsageDial({ usage }: { usage: ProviderUsage }): ReactElement | null {
         <div className="usage-dial__windows">
           {secondaryWindows.map((item) => {
             const itemRemaining = remainingPercent(item);
+            const displayLabel = formatUsageWindowLabel(item.label);
             return (
               <div key={item.label} className="usage-dial__window-row">
-                <span className="usage-dial__window-label" title={item.label}>{item.label}</span>
+                <span className="usage-dial__window-label" title={item.label}>{displayLabel}</span>
+                <span
+                  className="usage-dial__window-value"
+                  aria-label={`${Math.round(itemRemaining)} percent of ${displayLabel} remaining`}
+                >
+                  {Math.round(itemRemaining)}%
+                </span>
                 <span className="usage-dial__mini-bar" aria-hidden="true">
                   <span
                     className={itemRemaining <= LOW_REMAINING_THRESHOLD ? "is-danger" : ""}
                     style={{ width: `${itemRemaining}%` }}
                   />
                 </span>
-                <span
-                  className="usage-dial__window-value"
-                  aria-label={`${Math.round(itemRemaining)} percent of ${item.label} remaining`}
-                >
-                  {Math.round(itemRemaining)}%
-                </span>
+                <span className="usage-dial__window-reset">{formatResetLabel(item.resetsAt)}</span>
               </div>
             );
           })}

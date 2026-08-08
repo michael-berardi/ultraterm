@@ -163,17 +163,11 @@ function useWindowGeometryPersistence(): void {
       }
 
       if (disposed) return;
-      // Reveal only after the boot splash has painted, so the window never
-      // flashes a bare black frame.
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          if (disposed) return;
-          void (async () => {
-            await appWindow.show();
-            await appWindow.setFocus();
-          })();
-        });
-      });
+      // The window is normally visible from native creation and the inline
+      // splash covers first paint. Keep this idempotent reveal for externally
+      // hidden windows, but never gate it on rAF: hidden windows do not paint.
+      await appWindow.show();
+      await appWindow.setFocus();
       [unlistenMoved, unlistenResized] = await Promise.all([
         appWindow.onMoved(queueSave),
         appWindow.onResized(queueSave),
@@ -459,14 +453,18 @@ function App(): ReactElement {
   const [splash, setSplash] = useState<"visible" | "exiting" | "gone">("visible");
   const [mountedControllers, setMountedControllers] = useState<ReadonlySet<string>>(new Set());
   const bootStartedAt = useRef(Date.now());
+  const { registerController } = workspace;
 
   useEffect(() => {
     setBootStarted(true);
     void workspace.bootstrap(DEFAULT_TERMINAL_COUNT);
   }, [workspace.bootstrap]);
 
+  // TerminalPane recreates xterm whenever this callback changes. Depending on
+  // the whole workspace object here causes a render/remount loop because the
+  // hook returns a new wrapper object on every state update.
   const handleControllerReady = useCallback((id: string, controller: TerminalController | null) => {
-    workspace.registerController(id, controller);
+    registerController(id, controller);
     setMountedControllers((current) => {
       const has = current.has(id);
       if (controller !== null && !has) return new Set(current).add(id);
@@ -477,7 +475,7 @@ function App(): ReactElement {
       }
       return current;
     });
-  }, [workspace]);
+  }, [registerController]);
 
   // The splash lifts only when the workspace is genuinely ready: bootstrap
   // finished and every restored terminal has mounted its xterm controller.

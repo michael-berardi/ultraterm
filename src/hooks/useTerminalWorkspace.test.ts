@@ -1,11 +1,35 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  appendCappedOutput,
   cleanupOrphanTmuxSlots,
   defaultTerminalSlots,
+  ompCommandInput,
   readLastLaunchProfile,
   readTerminalLaunchRows,
   reconnectTerminalSlot,
 } from "./useTerminalWorkspace";
+
+describe("appendCappedOutput", () => {
+  it("retains only the newest bytes when buffered output exceeds its cap", () => {
+    const buffer = { bytes: 0, chunks: [] as Uint8Array[] };
+
+    appendCappedOutput(buffer, new Uint8Array([1, 2, 3]), 5);
+    appendCappedOutput(buffer, new Uint8Array([4, 5, 6, 7]), 5);
+
+    expect(buffer.bytes).toBe(5);
+    expect(Array.from(buffer.chunks[0])).toEqual([3]);
+    expect(Array.from(buffer.chunks[1])).toEqual([4, 5, 6, 7]);
+  });
+
+  it("crops a single oversized output chunk to the newest bytes", () => {
+    const buffer = { bytes: 0, chunks: [] as Uint8Array[] };
+
+    appendCappedOutput(buffer, new Uint8Array([1, 2, 3, 4, 5, 6]), 3);
+
+    expect(buffer.bytes).toBe(3);
+    expect(Array.from(buffer.chunks[0])).toEqual([4, 5, 6]);
+  });
+});
 
 function stubStorage(value: string | null): void {
   vi.stubGlobal("window", {
@@ -134,6 +158,14 @@ describe("reconnectTerminalSlot", () => {
     finishDetach?.();
     await reconnecting;
     expect(launch).toHaveBeenCalledWith(3);
+  });
+});
+
+describe("ompCommandInput", () => {
+  it("clears pending prompt input before submitting the selected command", () => {
+    expect(ompCommandInput("/new")).toBe("\u0015/new\r");
+    expect(ompCommandInput("/resume")).toBe("\u0015/resume\r");
+    expect(ompCommandInput("/exit")).toBe("\u0015/exit\r");
   });
 });
 

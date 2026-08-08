@@ -143,6 +143,12 @@ impl Drop for Session {
         let _ = self.child.kill();
     }
 }
+
+fn close_writer_channel(writer: &mut mpsc::Sender<Vec<u8>>) {
+    let (dummy_tx, _dummy_rx) = mpsc::channel::<Vec<u8>>();
+    drop(std::mem::replace(writer, dummy_tx));
+}
+
 fn shutdown_session(session: &mut Session) -> Result<(), String> {
     let id = session.id.clone();
     let already_dead = session
@@ -164,9 +170,9 @@ fn shutdown_session(session: &mut Session) -> Result<(), String> {
             .map_err(|_| format!("Reader thread panicked for session {id}"))?;
     }
 
-    // Dropping the sender closes the channel; the writer thread flushes and
-    // exits after the child dies.
+    // The writer blocks on recv(), so close its channel before joining it.
     if let Some(handle) = session.writer_handle.take() {
+        close_writer_channel(&mut session.writer);
         let _ = handle.join();
     }
 
@@ -462,11 +468,7 @@ fn cleanup_thread(rx: mpsc::Receiver<String>, manager: Arc<Mutex<SessionManager>
                 let _ = handle.join();
             }
             if let Some(handle) = session.writer_handle.take() {
-                // The writer thread exits only when the channel closes, so the
-                // session's sender must be dropped before joining. Session
-                // implements Drop, so swap the sender out instead of moving it.
-                let (dummy_tx, _dummy_rx) = mpsc::channel::<Vec<u8>>();
-                drop(std::mem::replace(&mut session.writer, dummy_tx));
+                close_writer_channel(&mut session.writer);
                 let _ = handle.join();
             }
         }
@@ -524,15 +526,25 @@ fn home_dir() -> Result<PathBuf, String> {
         })
 }
 
-fn combine_command_search_path(
+fn combine_command_search_path_with_preferred(
     configured: Option<&OsStr>,
+    preferred: &[PathBuf],
     inherited: &OsStr,
 ) -> Result<OsString, String> {
-    let Some(configured) = configured else {
-        return Ok(inherited.to_os_string());
-    };
+    let mut entries = Vec::new();
+    if let Some(configured) = configured {
+        entries.extend(std::env::split_paths(configured));
+    }
+    entries.extend(preferred.iter().cloned());
+    entries.extend(std::env::split_paths(inherited));
+    let mut unique_entries = Vec::new();
+    for entry in entries {
+        if !unique_entries.contains(&entry) {
+            unique_entries.push(entry);
+        }
+    }
 
-    std::env::join_paths(std::env::split_paths(configured).chain(std::env::split_paths(inherited)))
+    std::env::join_paths(unique_entries)
         .map_err(|error| format!("ULTRATERM_PATH could not be combined with PATH: {error}"))
 }
 
@@ -540,21 +552,17 @@ fn command_search_path() -> Result<OsString, String> {
     let inherited =
         nonempty_env_os("PATH").unwrap_or_else(|| OsString::from(DEFAULT_COMMAND_SEARCH_PATH));
     let configured = nonempty_env_os("ULTRATERM_PATH");
-    let combined = combine_command_search_path(configured.as_deref(), &inherited)?;
-    // Finder/Dock launches inherit a bare launchd PATH without user bin dirs;
-    // append the conventional locations so user-installed tools (omp, omp-safe)
-    // resolve regardless of how the app was started.
-    let Ok(home) = home_dir() else {
-        return Ok(combined);
-    };
-    let mut entries: Vec<PathBuf> = std::env::split_paths(&combined).collect();
-    for candidate in [home.join("bin"), home.join(".local/bin")] {
-        if candidate.is_dir() && !entries.contains(&candidate) {
-            entries.push(candidate);
-        }
-    }
-    std::env::join_paths(entries)
-        .map_err(|error| format!("Command search path could not include user bin dirs: {error}"))
+    // Finder/Dock launches can inherit system package-manager paths before the
+    // user's canonical tools. Keep an explicit ULTRATERM_PATH first, then
+    // prefer the conventional user locations so reconnect resolves the same
+    // OMP binary that created a persistent tmux session.
+    let preferred = home_dir()
+        .ok()
+        .into_iter()
+        .flat_map(|home| [home.join("bin"), home.join(".local/bin")])
+        .filter(|candidate| candidate.is_dir())
+        .collect::<Vec<_>>();
+    combine_command_search_path_with_preferred(configured.as_deref(), &preferred, &inherited)
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -866,8 +874,7 @@ fn build_command(
         let home_fallbacks: Vec<PathBuf> = home_dir()
             .map(|home| vec![home.join("bin/omp-safe"), home.join(".local/bin/omp-safe")])
             .unwrap_or_default();
-        let home_fallback_refs: Vec<&Path> =
-            home_fallbacks.iter().map(PathBuf::as_path).collect();
+        let home_fallback_refs: Vec<&Path> = home_fallbacks.iter().map(PathBuf::as_path).collect();
         let omp_path = resolve_optional_executable(
             "ULTRATERM_OMP_LAUNCHER",
             "omp-safe",
@@ -1067,6 +1074,34 @@ fn process_tree_memory_bytes(system: &System, roots: &HashSet<Pid>) -> u64 {
         .sum()
 }
 
+#[cfg(target_os = "macos")]
+fn process_physical_footprint_bytes(pid: u32) -> Option<u64> {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage_info_v2>::zeroed();
+    // SAFETY: proc_pid_rusage writes a complete rusage_info_v2 into the valid,
+    // correctly sized pointer when it returns zero. The process id is our own.
+    let status = unsafe {
+        libc::proc_pid_rusage(
+            pid as libc::c_int,
+            libc::RUSAGE_INFO_V2,
+            usage.as_mut_ptr().cast(),
+        )
+    };
+    if status != 0 {
+        return None;
+    }
+    // SAFETY: a zero return from proc_pid_rusage initialized the structure.
+    Some(unsafe { usage.assume_init() }.ri_phys_footprint)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn process_physical_footprint_bytes(_pid: u32) -> Option<u64> {
+    None
+}
+
+fn preferred_process_memory_mib(physical_footprint: Option<u64>, rss: Option<u64>) -> u64 {
+    physical_footprint.or(rss).unwrap_or(0) / 1024 / 1024
+}
+
 // Heavy work (full process refresh + tmux subprocess) must not run on the
 // main thread: it fires on terminal-output bursts and stalls keystroke IPC.
 #[tauri::command(async)]
@@ -1093,11 +1128,15 @@ fn system_metrics(
     let mut sys = metrics_system.0.lock().map_err(|e| e.to_string())?;
     sys.refresh_processes(ProcessesToUpdate::All, true);
 
-    let app_pid = Pid::from_u32(process::id());
-    let app_memory_mib = sys
-        .process(app_pid)
-        .map(|p| p.memory() / 1024 / 1024)
-        .unwrap_or(0);
+    let app_pid_u32 = process::id();
+    let app_pid = Pid::from_u32(app_pid_u32);
+    // sysinfo's RSS includes large clean/shared WebKit mappings on macOS and
+    // substantially overstates UltraTerm's real memory pressure. phys_footprint
+    // is the Activity Monitor-aligned amount charged to this process.
+    let app_memory_mib = preferred_process_memory_mib(
+        process_physical_footprint_bytes(app_pid_u32),
+        sys.process(app_pid).map(|process| process.memory()),
+    );
 
     let mut terminal_roots = direct_pids;
     terminal_roots.extend(managed_tmux_pane_pids(&matrix_slots));
@@ -1419,6 +1458,18 @@ mod tests {
     }
 
     #[test]
+    fn writer_channel_is_disconnected_before_joining_writer_thread() {
+        let (mut writer, receiver) = mpsc::channel::<Vec<u8>>();
+
+        close_writer_channel(&mut writer);
+
+        assert_eq!(
+            receiver.recv_timeout(std::time::Duration::from_millis(25)),
+            Err(mpsc::RecvTimeoutError::Disconnected),
+        );
+    }
+
+    #[test]
     fn default_shell_title_uses_shell_name() {
         // We can only observe the helper behavior; the env var may or may not be set.
         let title = default_shell_title();
@@ -1438,8 +1489,12 @@ mod tests {
     #[test]
     fn ultraterm_path_precedes_and_preserves_inherited_path() {
         let inherited = OsStr::new("/usr/bin:/bin");
-        let combined =
-            combine_command_search_path(Some(OsStr::new("/custom/bin")), inherited).unwrap();
+        let combined = combine_command_search_path_with_preferred(
+            Some(OsStr::new("/custom/bin")),
+            &[],
+            inherited,
+        )
+        .unwrap();
         assert_eq!(
             std::env::split_paths(&combined).collect::<Vec<_>>(),
             vec![
@@ -1449,9 +1504,53 @@ mod tests {
             ]
         );
         assert_eq!(
-            combine_command_search_path(None, inherited).unwrap(),
+            combine_command_search_path_with_preferred(None, &[], inherited).unwrap(),
             inherited
         );
+    }
+
+    #[test]
+    fn user_command_paths_precede_inherited_package_manager_paths() {
+        let inherited = OsStr::new("/opt/homebrew/bin:/usr/bin:/bin");
+        let preferred = vec![
+            PathBuf::from("/Users/test/bin"),
+            PathBuf::from("/Users/test/.local/bin"),
+        ];
+        let combined = combine_command_search_path_with_preferred(
+            Some(OsStr::new("/custom/bin")),
+            &preferred,
+            inherited,
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::env::split_paths(&combined).collect::<Vec<_>>(),
+            vec![
+                PathBuf::from("/custom/bin"),
+                PathBuf::from("/Users/test/bin"),
+                PathBuf::from("/Users/test/.local/bin"),
+                PathBuf::from("/opt/homebrew/bin"),
+                PathBuf::from("/usr/bin"),
+                PathBuf::from("/bin"),
+            ]
+        );
+    }
+
+    #[test]
+    fn physical_footprint_is_preferred_over_resident_mapping_size() {
+        assert_eq!(
+            preferred_process_memory_mib(Some(64 * 1024 * 1024), Some(150 * 1024 * 1024)),
+            64,
+        );
+    }
+
+    #[test]
+    fn resident_mapping_size_is_a_portable_memory_fallback() {
+        assert_eq!(
+            preferred_process_memory_mib(None, Some(88 * 1024 * 1024)),
+            88
+        );
+        assert_eq!(preferred_process_memory_mib(None, None), 0);
     }
 
     #[test]

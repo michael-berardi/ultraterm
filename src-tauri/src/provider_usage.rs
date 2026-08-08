@@ -623,7 +623,15 @@ fn kimi_detail_label(object: &serde_json::Map<String, Value>) -> Option<String> 
     let unit = unit.to_ascii_lowercase();
     let unit = unit.strip_prefix("time_unit_").unwrap_or(&unit);
     let unit = unit.trim_end_matches('s');
-    Some(format!("{}-{unit}", duration as i64))
+    let seconds_per_unit = match unit {
+        "second" => 1.0,
+        "minute" => 60.0,
+        "hour" => 3_600.0,
+        "day" => 86_400.0,
+        "week" => 604_800.0,
+        _ => return Some(format!("{}-{unit}", duration as i64)),
+    };
+    Some(duration_label(duration * seconds_per_unit))
 }
 
 fn parse_window_item(value: &Value, fallback_label: Option<&str>) -> Option<ProviderUsageWindow> {
@@ -1001,6 +1009,21 @@ mod tests {
         assert!(windows[0].resets_at.is_some());
         assert_eq!(windows[1].resets_at, Some(1_764_547_200_000));
         assert_eq!(pick_plan(&body).as_deref(), Some("kimi-for-coding"));
+    }
+
+    #[test]
+    fn kimi_300_minute_window_is_normalized_to_five_hours_with_reset() {
+        let body = json!({
+            "limits": [{
+                "detail": { "limit": 100, "remaining": 90, "reset_in": 7200 },
+                "window": { "duration": 300, "timeUnit": "minute" }
+            }]
+        });
+        let windows = collect_windows(&body, 0);
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].label, "5-hour");
+        assert_eq!(windows[0].used_percent, 10.0);
+        assert!(windows[0].resets_at.is_some());
     }
 
     #[test]

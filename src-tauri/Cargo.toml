@@ -1,6 +1,6 @@
 [package]
 name = "ultraterm"
-version = "0.3.0"
+version = "0.3.1"
 description = "A unified liquid-glass OMP terminal workspace."
 authors = ["Liberty Design Studio"]
 edition = "2021"
@@ -33,6 +33,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 tokio = { version = "1", features = ["net", "io-util", "time", "process", "rt"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 keyring = { version = "3", default-features = false, features = ["apple-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3.15.0"

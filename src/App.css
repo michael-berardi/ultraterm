@@ -1446,7 +1446,7 @@ button:disabled {
   z-index: 3;
   display: grid;
   gap: 7px;
-  padding: 10px 17px 14px;
+  padding: 10px 17px 18px;
   border-top: 1px solid rgba(255, 255, 255, 0.075);
   background:
     linear-gradient(0deg, rgba(0, 0, 0, 0.22), transparent),
@@ -1608,6 +1608,26 @@ button:disabled {
 .token-today__value.is-increasing {
   animation: telemetry-increase 440ms cubic-bezier(0.2, 0.76, 0.25, 1);
   will-change: color;
+}
+
+.token-cache-summary {
+  display: flex;
+  width: 100%;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 1px 2px 2px;
+  color: var(--text-muted);
+  font-size: 9px;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+}
+
+.token-cache-summary strong {
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
 }
 
 @keyframes telemetry-increase {
@@ -3019,7 +3039,7 @@ button:disabled {
 }
 
 /* ---------------------------------------------------------------------------
-   Provider usage dials — compact automotive gauges under token telemetry
+   Provider usage dials — restrained quota rings under token telemetry
 --------------------------------------------------------------------------- */
 
 .sidebar-section--usage {
@@ -3113,9 +3133,9 @@ button:disabled {
 .usage-dial {
   display: grid;
   min-width: 0;
-  gap: 3px;
+  gap: 5px;
   justify-items: center;
-  padding: 8px 9px 9px;
+  padding: 8px 9px 12px;
   border: 1px solid rgba(255, 255, 255, 0.075);
   border-top-color: rgba(255, 255, 255, 0.13);
   border-radius: 11px;
@@ -3179,29 +3199,22 @@ button:disabled {
 
 .usage-dial__gauge-wrap {
   position: relative;
-  width: 100%;
-  margin-top: 1px;
+  width: 72px;
+  height: 72px;
+  margin: 1px auto 0;
 }
 
 .usage-dial__gauge {
   display: block;
   width: 100%;
-  height: auto;
-}
-
-.usage-dial__tick {
-  stroke: rgba(255, 255, 255, 0.16);
-  stroke-width: 1;
-}
-
-.usage-dial__tick--major {
-  stroke: rgba(255, 255, 255, 0.32);
+  height: 100%;
+  filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.26));
 }
 
 .usage-dial__track {
-  stroke: rgba(255, 255, 255, 0.09);
+  stroke: rgba(255, 255, 255, 0.075);
   stroke-linecap: round;
-  stroke-width: 5;
+  stroke-width: 4.5;
 }
 
 .usage-dial--loading .usage-dial__track {
@@ -3211,7 +3224,9 @@ button:disabled {
 .usage-dial__value {
   stroke: var(--working);
   stroke-linecap: round;
-  stroke-width: 5;
+  stroke-width: 4.5;
+  transform: rotate(-90deg);
+  transform-origin: 50% 50%;
   transition: stroke-dasharray 480ms cubic-bezier(0.2, 0.76, 0.25, 1);
 }
 
@@ -3221,38 +3236,24 @@ button:disabled {
 
 .usage-dial__reading {
   position: absolute;
-  right: 0;
-  bottom: 0;
-  left: 0;
+  inset: 0;
   display: grid;
-  gap: 1px;
-  justify-items: center;
+  place-items: center;
   pointer-events: none;
 }
 
 .usage-dial__percent {
   color: var(--text);
-  font-size: 15px;
-  font-weight: 580;
+  font-size: 18px;
+  font-weight: 610;
   font-variant-numeric: tabular-nums;
-  letter-spacing: -0.025em;
+  letter-spacing: -0.04em;
   line-height: 1;
 }
 
 .usage-dial--disconnected .usage-dial__percent,
 .usage-dial--loading .usage-dial__percent {
   color: var(--text-faint);
-}
-
-.usage-dial__window {
-  max-width: 100%;
-  overflow: hidden;
-  color: var(--text-faint);
-  font-size: 9px;
-  letter-spacing: 0.04em;
-  text-overflow: ellipsis;
-  text-transform: uppercase;
-  white-space: nowrap;
 }
 
 .usage-dial__footer {
@@ -3281,29 +3282,33 @@ button:disabled {
 .usage-dial__windows {
   display: grid;
   width: 100%;
-  gap: 3px;
-  margin-top: 2px;
+  gap: 4px;
+  margin-top: 1px;
 }
 
 .usage-dial__window-row {
   display: grid;
   align-items: center;
-  gap: 5px;
-  grid-template-columns: minmax(0, 1fr) 34px auto;
+  gap: 4px 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.065);
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .usage-dial__window-label {
   overflow: hidden;
   color: var(--text-faint);
-  font-size: 9px;
-  letter-spacing: 0.03em;
+  font-size: 9.5px;
+  font-weight: 570;
+  letter-spacing: 0.01em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .usage-dial__mini-bar {
+  grid-column: 1 / -1;
   overflow: hidden;
-  height: 3px;
+  height: 2px;
   border-radius: 2px;
   background: rgba(255, 255, 255, 0.08);
 }
@@ -3321,9 +3326,20 @@ button:disabled {
 }
 
 .usage-dial__window-value {
-  color: var(--text-muted);
-  font-size: 9px;
+  color: var(--text-soft);
+  font-size: 9.5px;
+  font-weight: 620;
   font-variant-numeric: tabular-nums;
+}
+
+.usage-dial__window-reset {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 8.5px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---------------------------------------------------------------------------

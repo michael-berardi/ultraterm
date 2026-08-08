@@ -25,6 +25,7 @@ import { HistoryModal } from "./HistoryModal";
 import { SettingsModal, type SettingsSection } from "./SettingsModal";
 import { UsageDials } from "./UsageDials";
 import { restartApp } from "../lib/terminalApi";
+import { formatCacheHitPercent } from "../lib/tokenTelemetry";
 import {
   LAUNCH_PROFILE_OPTIONS,
   launchProfileLabel,
@@ -487,6 +488,14 @@ export function WorkspaceRail({
             <div className="sidebar-section__heading">
               <span id="telemetry-heading"><Gauge size={13} /> Token telemetry</span>
               <small>{metrics.sessionCount} live</small>
+            </div>
+
+            <div
+              className="token-cache-summary"
+              title="Cached input tokens divided by all input-side tokens during the past 24 hours"
+            >
+              <span>24h cache hit</span>
+              <strong>{formatCacheHitPercent(telemetry.past24Hours)}</strong>
             </div>
 
             <div className="token-today">

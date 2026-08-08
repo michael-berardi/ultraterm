@@ -20,7 +20,7 @@ ULTRATERM_OMP_LAUNCHER="$PWD/scripts/omp-safe" npm run tauri dev
 
 Each matrix slot receives its own `ultraterm-matrix-N` tmux session. The session survives app restarts, automatically resumes OMP after an unexpected process exit, and hides tmux's status bar inside UltraTerm.
 
-`OMP_PROFILE` is optional. When it is unset or empty, the launcher omits `--profile` and OMP selects its normal default. To select a profile explicitly, set `OMP_PROFILE` before starting UltraTerm. UltraTerm refuses to attach to a persistent session created with a different OMP binary, version, or profile; preserve that session under another name or stop it before changing configuration.
+`OMP_PROFILE` is optional. When it is unset or empty, the launcher omits `--profile` and OMP selects its normal default. To select a profile explicitly, set `OMP_PROFILE` before starting UltraTerm. OMP upgrades do not interrupt persistent-session reconnects. UltraTerm still refuses to attach to a session created with a different OMP binary path or profile; preserve that session under another name or stop it before changing configuration.
 
 ### Configuration
 
