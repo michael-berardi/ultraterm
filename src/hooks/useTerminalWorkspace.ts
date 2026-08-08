@@ -163,6 +163,10 @@ export function useTerminalWorkspace(sessionCap: number) {
   const [notice, setNotice] = useState<string | null>(null);
   const controllers = useRef(new Map<string, TerminalController>());
   const pendingOutput = useRef(new Map<string, PendingOutput>());
+  // Output is batched per session and flushed once per animation frame, so a
+  // busy pane issues a single IPC-decode-and-write per frame instead of one
+  // per PTY read. This keeps echo latency smooth while typing.
+  const writeBuffers = useRef(new Map<string, PendingOutput & { frame: number | null }>());
   const activityTimers = useRef(new Map<string, number>());
   const telemetryFetch = useRef<{ timer: number | null; lastFetch: number }>({
     timer: null,
@@ -176,6 +180,11 @@ export function useTerminalWorkspace(sessionCap: number) {
   const forgetSession = useCallback((id: string): void => {
     controllers.current.delete(id);
     pendingOutput.current.delete(id);
+    const writeBuffer = writeBuffers.current.get(id);
+    if (writeBuffer?.frame !== null && writeBuffer?.frame !== undefined) {
+      window.cancelAnimationFrame(writeBuffer.frame);
+    }
+    writeBuffers.current.delete(id);
     const activityTimer = activityTimers.current.get(id);
     if (activityTimer) window.clearTimeout(activityTimer);
     activityTimers.current.delete(id);
@@ -183,6 +192,10 @@ export function useTerminalWorkspace(sessionCap: number) {
   const clearRuntimeState = useCallback((): void => {
     controllers.current.clear();
     pendingOutput.current.clear();
+    writeBuffers.current.forEach((buffer) => {
+      if (buffer.frame !== null) window.cancelAnimationFrame(buffer.frame);
+    });
+    writeBuffers.current.clear();
     activityTimers.current.forEach((timer) => window.clearTimeout(timer));
     activityTimers.current.clear();
   }, []);
@@ -239,7 +252,35 @@ export function useTerminalWorkspace(sessionCap: number) {
         const controller = controllers.current.get(payload.id);
 
         if (controller) {
-          controller.write(bytes);
+          let buffer = writeBuffers.current.get(payload.id);
+          if (!buffer) {
+            buffer = { bytes: 0, chunks: [], frame: null };
+            writeBuffers.current.set(payload.id, buffer);
+          }
+          buffer.chunks.push(bytes);
+          buffer.bytes += bytes.byteLength;
+          if (buffer.frame === null) {
+            buffer.frame = window.requestAnimationFrame(() => {
+              writeBuffers.current.delete(payload.id);
+              const target = controllers.current.get(payload.id);
+              if (!target) {
+                // Controller vanished between schedule and flush: keep the
+                // bytes in pendingOutput so a re-registered pane still gets them.
+                const pending = pendingOutput.current.get(payload.id) ?? { bytes: 0, chunks: [] };
+                pending.chunks.push(...buffer.chunks);
+                pending.bytes += buffer.bytes;
+                pendingOutput.current.set(payload.id, pending);
+                return;
+              }
+              const merged = new Uint8Array(buffer.bytes);
+              let offset = 0;
+              for (const chunk of buffer.chunks) {
+                merged.set(chunk, offset);
+                offset += chunk.byteLength;
+              }
+              target.write(merged);
+            });
+          }
           return;
         }
 
@@ -271,6 +312,10 @@ export function useTerminalWorkspace(sessionCap: number) {
       active = false;
       activityTimers.current.forEach((timer) => window.clearTimeout(timer));
       activityTimers.current.clear();
+      writeBuffers.current.forEach((buffer) => {
+        if (buffer.frame !== null) window.cancelAnimationFrame(buffer.frame);
+      });
+      writeBuffers.current.clear();
       if (telemetryFetch.current.timer !== null) {
         window.clearTimeout(telemetryFetch.current.timer);
         telemetryFetch.current.timer = null;

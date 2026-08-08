@@ -125,9 +125,13 @@ struct Session {
     launched_omp: bool,
     launch_profile: LaunchProfile,
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    // Input is queued to a dedicated writer thread so a backed-up PTY buffer
+    // can never block keystroke IPC on the main thread. The channel preserves
+    // exact keystroke order.
+    writer: mpsc::Sender<Vec<u8>>,
     child: Box<dyn Child + Send + Sync>,
     reader_handle: Option<thread::JoinHandle<()>>,
+    writer_handle: Option<thread::JoinHandle<()>>,
 }
 
 struct MetricsSystem(Mutex<System>);
@@ -158,6 +162,12 @@ fn shutdown_session(session: &mut Session) -> Result<(), String> {
         handle
             .join()
             .map_err(|_| format!("Reader thread panicked for session {id}"))?;
+    }
+
+    // Dropping the sender closes the channel; the writer thread flushes and
+    // exits after the child dies.
+    if let Some(handle) = session.writer_handle.take() {
+        let _ = handle.join();
     }
 
     Ok(())
@@ -244,6 +254,9 @@ impl SessionManager {
         let session_id_for_thread = id.clone();
         let cleanup_tx = self.cleanup_tx.clone();
 
+        let (writer_tx, writer_rx) = mpsc::channel::<Vec<u8>>();
+        let writer_handle = thread::spawn(move || writer_thread(writer, writer_rx));
+
         let session = Session {
             id: id.clone(),
             slot: request.slot,
@@ -252,9 +265,10 @@ impl SessionManager {
             launched_omp,
             launch_profile,
             master: pair.master,
-            writer,
+            writer: writer_tx,
             child,
             reader_handle: None,
+            writer_handle: Some(writer_handle),
         };
         self.sessions.insert(id.clone(), session);
 
@@ -291,12 +305,8 @@ impl SessionManager {
             .map_err(|e| format!("Invalid base64 input: {}", e))?;
         session
             .writer
-            .write_all(&bytes)
-            .map_err(|e| format!("Failed to write to session {}: {}", id, e))?;
-        session
-            .writer
-            .flush()
-            .map_err(|e| format!("Failed to flush session {}: {}", id, e))?;
+            .send(bytes)
+            .map_err(|e| format!("Failed to queue input for session {}: {}", id, e))?;
         Ok(())
     }
 
@@ -386,13 +396,24 @@ impl SessionManager {
     }
 }
 
+fn writer_thread(mut writer: Box<dyn Write + Send>, rx: mpsc::Receiver<Vec<u8>>) {
+    while let Ok(bytes) = rx.recv() {
+        if writer.write_all(&bytes).is_err() {
+            break;
+        }
+        if writer.flush().is_err() {
+            break;
+        }
+    }
+}
+
 fn reader_thread(
     id: String,
     app: AppHandle,
     cleanup_tx: mpsc::Sender<String>,
     mut reader: Box<dyn Read + Send>,
 ) {
-    let mut buf = [0u8; 8192];
+    let mut buf = [0u8; 65536];
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,
@@ -433,6 +454,9 @@ fn cleanup_thread(rx: mpsc::Receiver<String>, manager: Arc<Mutex<SessionManager>
         if let Some(mut session) = manager.sessions.remove(&id) {
             let _ = session.child.kill();
             if let Some(handle) = session.reader_handle.take() {
+                let _ = handle.join();
+            }
+            if let Some(handle) = session.writer_handle.take() {
                 let _ = handle.join();
             }
         }
