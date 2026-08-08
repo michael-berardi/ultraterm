@@ -26,6 +26,10 @@ import type {
   WorkspaceSession,
 } from "../types";
 import { isLaunchProfileId, launchProfileFromOmpProfile } from "../types";
+import {
+  isResizeActivitySuppressed,
+  resizeActivitySuppressionDeadline,
+} from "../lib/terminalActivity";
 
 const MAX_PENDING_OUTPUT_BYTES = 256 * 1024;
 const ACTIVITY_IDLE_DELAY_MS = 1_200;
@@ -207,6 +211,7 @@ export function useTerminalWorkspace(sessionCap: number) {
   // per PTY read. This keeps echo latency smooth while typing.
   const writeBuffers = useRef(new Map<string, PendingOutput & { frame: number | null }>());
   const activityTimers = useRef(new Map<string, number>());
+  const resizeActivitySuppression = useRef(new Map<string, number>());
   const telemetryFetch = useRef<{ timer: number | null; lastFetch: number }>({
     timer: null,
     lastFetch: 0,
@@ -227,6 +232,7 @@ export function useTerminalWorkspace(sessionCap: number) {
     const activityTimer = activityTimers.current.get(id);
     if (activityTimer) window.clearTimeout(activityTimer);
     activityTimers.current.delete(id);
+    resizeActivitySuppression.current.delete(id);
   }, []);
   const clearRuntimeState = useCallback((): void => {
     controllers.current.clear();
@@ -237,6 +243,14 @@ export function useTerminalWorkspace(sessionCap: number) {
     writeBuffers.current.clear();
     activityTimers.current.forEach((timer) => window.clearTimeout(timer));
     activityTimers.current.clear();
+    resizeActivitySuppression.current.clear();
+  }, []);
+
+  const suppressActivityForResize = useCallback((id: string): void => {
+    resizeActivitySuppression.current.set(
+      id,
+      resizeActivitySuppressionDeadline(Date.now()),
+    );
   }, []);
 
   const cleanupOrphanSlots = useCallback(async (intendedSlots: number[]): Promise<void> => {
@@ -253,6 +267,10 @@ export function useTerminalWorkspace(sessionCap: number) {
     if (!desktopRuntime) return;
     let active = true;
     const markWorking = (id: string) => {
+      const suppressedUntil = resizeActivitySuppression.current.get(id);
+      if (isResizeActivitySuppressed(suppressedUntil, Date.now())) return;
+      if (suppressedUntil !== undefined) resizeActivitySuppression.current.delete(id);
+
       const previousTimer = activityTimers.current.get(id);
       if (previousTimer) window.clearTimeout(previousTimer);
 
@@ -345,6 +363,7 @@ export function useTerminalWorkspace(sessionCap: number) {
       active = false;
       activityTimers.current.forEach((timer) => window.clearTimeout(timer));
       activityTimers.current.clear();
+      resizeActivitySuppression.current.clear();
       writeBuffers.current.forEach((buffer) => {
         if (buffer.frame !== null) window.cancelAnimationFrame(buffer.frame);
       });
@@ -730,6 +749,7 @@ export function useTerminalWorkspace(sessionCap: number) {
     hasPendingInput,
     sendTerminalInput,
     sendOmpCommand,
+    suppressActivityForResize,
     dismissNotice,
   };
 }

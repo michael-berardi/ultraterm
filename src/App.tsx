@@ -21,6 +21,7 @@ import {
   persistProviderUsagePreferences,
   readProviderUsagePreferences,
 } from "./lib/providerUsagePreferences";
+import { insertDroppedFilesIntoActiveTerminal } from "./lib/fileDrop";
 import {
   DEFAULT_TERMINAL_PREFERENCES,
   TERMINAL_SCROLLBACK,
@@ -284,6 +285,8 @@ function App(): ReactElement {
   const [sessionCap, setSessionCap] = useState(displaySessionCap);
   const workspace = useTerminalWorkspace(sessionCap);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const activeIdRef = useRef<string | null>(activeId);
+  activeIdRef.current = activeId;
   const [maximizedId, setMaximizedId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [theme, setTheme] = useState<ThemeId>(() => {
@@ -1023,6 +1026,31 @@ function App(): ReactElement {
   sendTerminalInputRef.current = workspace.sendTerminalInput;
 
   useEffect(() => {
+    let disposed = false;
+    let unlistenDragDrop: (() => void) | null = null;
+    const appWindow = getCurrentWindow();
+
+    void appWindow.onDragDropEvent((event) => {
+      if (event.payload.type !== "drop") return;
+      void insertDroppedFilesIntoActiveTerminal(
+        activeIdRef.current,
+        event.payload.paths,
+        sendTerminalInputRef.current,
+      );
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else unlistenDragDrop = unlisten;
+    }).catch((error) => {
+      console.error("UltraTerm file drop setup failed", error);
+    });
+
+    return () => {
+      disposed = true;
+      unlistenDragDrop?.();
+    };
+  }, []);
+
+  useEffect(() => {
     let holdTimer: number | null = null;
     let held = false;
     let triggered = false;
@@ -1246,6 +1274,7 @@ function App(): ReactElement {
               onActivate={selectTerminal}
               onControllerReady={handleControllerReady}
               onRestart={(id) => void workspace.restartPane(id)}
+              onTerminalResize={workspace.suppressActivityForResize}
             />
           ))}
 

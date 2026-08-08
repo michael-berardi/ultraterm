@@ -28,6 +28,7 @@ interface TerminalPaneProps {
   onActivate: (id: string) => void;
   onControllerReady: (id: string, controller: TerminalController | null) => void;
   onRestart: (id: string) => void;
+  onTerminalResize: (id: string) => void;
 }
 
 
@@ -128,9 +129,6 @@ function nextPendingInputLength(current: number, data: string): number {
 function terminalName(slot: number): string {
   return `Terminal ${slot}`;
 }
-function quoteShellPath(path: string): string {
-  return `'${path.split("'").join("'\\''")}'`;
-}
 
 export function TerminalPane({
   session,
@@ -144,6 +142,7 @@ export function TerminalPane({
   onActivate,
   onControllerReady,
   onRestart,
+  onTerminalResize,
 }: TerminalPaneProps): ReactElement {
   const hostRef = useRef<HTMLDivElement>(null);
   const [entering, setEntering] = useState(!reducedMotion && !suppressEntrance);
@@ -237,29 +236,6 @@ export function TerminalPane({
       }
     };
     let disposed = false;
-    let unlistenDragDrop: (() => void) | null = null;
-    const appWindow = getCurrentWindow();
-    void appWindow.onDragDropEvent((event) => {
-      if (event.payload.type !== "drop") return;
-      const { paths, position: physicalPosition } = event.payload;
-      void appWindow.scaleFactor().then((scaleFactor) => {
-        const position = physicalPosition.toLogical(scaleFactor);
-        const bounds = host.getBoundingClientRect();
-        if (
-          position.x < bounds.left
-          || position.x > bounds.right
-          || position.y < bounds.top
-          || position.y > bounds.bottom
-        ) return;
-        sendInput(`${paths.map(quoteShellPath).join(" ")} `);
-        terminal.focus();
-      });
-    }).then((unlisten) => {
-      if (disposed) unlisten();
-      else unlistenDragDrop = unlisten;
-    }).catch((error) => {
-      console.error(`UltraTerm file drop setup failed for ${terminalName(session.slot)}`, error);
-    });
     host.addEventListener("keydown", handleKeyDown, true);
 
     let resizeFrame = 0;
@@ -289,6 +265,7 @@ export function TerminalPane({
 
     const inputDisposable = terminal.onData(sendInput);
     const resizeDisposable = terminal.onResize(({ cols, rows }) => {
+      onTerminalResize(session.id);
       void resizeSession(session.id, cols, rows).catch((error) => {
         console.error(`UltraTerm resize failed for ${terminalName(session.slot)}`, error);
       });
@@ -358,7 +335,6 @@ export function TerminalPane({
 
     return () => {
       disposed = true;
-      unlistenDragDrop?.();
       window.cancelAnimationFrame(scrollFrame);
       window.cancelAnimationFrame(resizeFrame);
       window.clearTimeout(resizeTimer);
@@ -371,7 +347,7 @@ export function TerminalPane({
       terminalRef.current = null;
       fitAddonRef.current = null;
     };
-  }, [onControllerReady, session.id, session.slot]);
+  }, [onControllerReady, onTerminalResize, session.id, session.slot]);
 
   useEffect(() => {
     if (terminalRef.current) terminalRef.current.options.scrollback = scrollback;
