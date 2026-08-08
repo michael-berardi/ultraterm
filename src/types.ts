@@ -14,6 +14,20 @@ export const DEFAULT_TERMINAL_PREFERENCES: Readonly<TerminalPreferences> = {
   cursorBlink: true,
 };
 
+export interface ProviderUsagePreferences {
+  showWeeklyPace: boolean;
+  showResetTimes: boolean;
+  showSecondaryWindows: boolean;
+  showPlanDetails: boolean;
+}
+
+export const DEFAULT_PROVIDER_USAGE_PREFERENCES: Readonly<ProviderUsagePreferences> = {
+  showWeeklyPace: true,
+  showResetTimes: true,
+  showSecondaryWindows: true,
+  showPlanDetails: true,
+};
+
 export type SessionStatus = "connecting" | "live" | "exited" | "error";
 export type SessionActivity = "idle" | "working";
 

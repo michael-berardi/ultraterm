@@ -32,6 +32,7 @@ import {
   type EffectMode,
   type LaunchProfileId,
   type MemorySnapshot,
+  type ProviderUsagePreferences,
   type ThemeId,
   type TerminalPreferences,
   type TokenTelemetry,
@@ -51,6 +52,7 @@ interface WorkspaceRailProps {
   theme: ThemeId;
   effectMode: EffectMode;
   terminalPreferences: TerminalPreferences;
+  providerUsagePreferences: ProviderUsagePreferences;
   notice: string | null;
   controllerConnected: boolean;
   controllerName: string | null;
@@ -66,6 +68,7 @@ interface WorkspaceRailProps {
   onThemeChange: (theme: ThemeId) => void;
   onEffectModeChange: (mode: EffectMode) => void;
   onTerminalPreferencesChange: (preferences: TerminalPreferences) => void;
+  onProviderUsagePreferencesChange: (preferences: ProviderUsagePreferences) => void;
   onDismissNotice: () => void;
 }
 
@@ -148,6 +151,7 @@ export function WorkspaceRail({
   theme,
   effectMode,
   terminalPreferences,
+  providerUsagePreferences,
   notice,
   controllerConnected,
   controllerName,
@@ -163,6 +167,7 @@ export function WorkspaceRail({
   onThemeChange,
   onEffectModeChange,
   onTerminalPreferencesChange,
+  onProviderUsagePreferencesChange,
   onDismissNotice,
 }: WorkspaceRailProps): ReactElement {
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -514,6 +519,7 @@ export function WorkspaceRail({
           </section>
 
           <UsageDials
+            preferences={providerUsagePreferences}
             onOpenSettings={() => {
               setSettingsSection("integrations");
               setSettingsOpen(true);
@@ -623,10 +629,12 @@ export function WorkspaceRail({
         theme={theme}
         effectMode={effectMode}
         terminalPreferences={terminalPreferences}
+        providerUsagePreferences={providerUsagePreferences}
         initialSection={settingsSection}
         onThemeChange={onThemeChange}
         onEffectModeChange={onEffectModeChange}
         onTerminalPreferencesChange={onTerminalPreferencesChange}
+        onProviderUsagePreferencesChange={onProviderUsagePreferencesChange}
         onClose={() => {
           setSettingsOpen(false);
           setSettingsSection(undefined);

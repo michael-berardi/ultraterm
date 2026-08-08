@@ -18,10 +18,15 @@ import {
   voiceInputStatus,
 } from "./lib/terminalApi";
 import {
+  persistProviderUsagePreferences,
+  readProviderUsagePreferences,
+} from "./lib/providerUsagePreferences";
+import {
   DEFAULT_TERMINAL_PREFERENCES,
   TERMINAL_SCROLLBACK,
   type EffectMode,
   type LaunchProfileId,
+  type ProviderUsagePreferences,
   type TerminalController,
   type ThemeId,
   type TerminalPreferences,
@@ -294,6 +299,9 @@ function App(): ReactElement {
   const [terminalPreferences, setTerminalPreferences] = useState<TerminalPreferences>(
     readTerminalPreferences,
   );
+  const [providerUsagePreferences, setProviderUsagePreferences] = useState<ProviderUsagePreferences>(
+    readProviderUsagePreferences,
+  );
   const [controllerOpen, setControllerOpen] = useState(false);
   const [controllerNotice, setControllerNotice] = useState<string | null>(null);
   const [voice, setVoice] = useState<VoiceSession>(IDLE_VOICE_SESSION);
@@ -535,6 +543,10 @@ function App(): ReactElement {
       // Settings remain live for this session when persistent storage is unavailable.
     }
   }, [terminalPreferences]);
+
+  useEffect(() => {
+    persistProviderUsagePreferences(providerUsagePreferences);
+  }, [providerUsagePreferences]);
 
   const selectedTerminalIds = useCallback((): string[] => {
     const targets: string[] = [];
@@ -1190,6 +1202,7 @@ function App(): ReactElement {
         theme={theme}
         effectMode={effectMode}
         terminalPreferences={terminalPreferences}
+        providerUsagePreferences={providerUsagePreferences}
         notice={workspace.notice ?? controllerNotice}
         controllerVoiceState={voice.state}
         controllerConnected={controller.connected}
@@ -1205,6 +1218,7 @@ function App(): ReactElement {
         onOpenController={() => setControllerOpen(true)}
         onEffectModeChange={setEffectMode}
         onTerminalPreferencesChange={setTerminalPreferences}
+        onProviderUsagePreferencesChange={setProviderUsagePreferences}
         onDismissNotice={() => {
           workspace.dismissNotice();
           setControllerNotice(null);

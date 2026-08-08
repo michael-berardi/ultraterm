@@ -7,14 +7,24 @@ import {
   usageStatusLabel,
   useProviderUsage,
 } from "../hooks/useProviderUsage";
-import type { ProviderUsage, ProviderUsageWindow } from "../types";
+import {
+  isWeeklyUsageWindow,
+  weeklyPaceLabel,
+  weeklyQuotaPace,
+  type WeeklyQuotaPace,
+} from "../lib/weeklyPacing";
+import type {
+  ProviderUsage,
+  ProviderUsagePreferences,
+  ProviderUsageWindow,
+} from "../types";
 
 const LOW_REMAINING_THRESHOLD = 10;
 
 /** Quota dials lead with the weekly window when the provider reports one. */
 export function displayWindow(usage: ProviderUsage): ProviderUsageWindow | null {
   if (usage.windows.length === 0) return null;
-  const weekly = usage.windows.find((window) => /week|7[-\s]?day/i.test(window.label));
+  const weekly = usage.windows.find(isWeeklyUsageWindow);
   return weekly ?? primaryWindow(usage);
 }
 
@@ -41,25 +51,50 @@ export function usagePlanLine(usage: ProviderUsage): string {
   return [usage.plan, meaningfulBalance].filter(Boolean).join(" · ");
 }
 
-function dialAriaSummary(usage: ProviderUsage, window: ProviderUsageWindow): string {
-  return [
+function dialAriaSummary(
+  usage: ProviderUsage,
+  window: ProviderUsageWindow,
+  preferences: ProviderUsagePreferences,
+  pace: WeeklyQuotaPace | null,
+): string {
+  const summary = [
     `${usage.displayName} usage`,
     usageStatusLabel(usage, false),
     `${Math.round(remainingPercent(window))} percent of ${window.label} remaining`,
-    formatResetLabel(window.resetsAt),
-  ].join(", ");
+  ];
+  if (preferences.showResetTimes) summary.push(formatResetLabel(window.resetsAt));
+  if (preferences.showWeeklyPace && pace) {
+    summary.push(
+      `${Math.round(pace.actualUsedPercent)} percent used against a ${Math.round(pace.targetUsedPercent)} percent weekly target`,
+      weeklyPaceLabel(pace),
+    );
+  }
+  return summary.join(", ");
 }
 
-function UsageDial({ usage }: { usage: ProviderUsage }): ReactElement | null {
+function UsageDial({
+  usage,
+  preferences,
+}: {
+  usage: ProviderUsage;
+  preferences: ProviderUsagePreferences;
+}): ReactElement | null {
   const window = displayWindow(usage);
   if (!window) return null;
   const remaining = remainingPercent(window);
   const danger = remaining <= LOW_REMAINING_THRESHOLD;
-  const secondaryWindows = usage.windows.filter((item) => item !== window).slice(0, 2);
-  const planLine = usagePlanLine(usage);
+  const secondaryWindows = preferences.showSecondaryWindows
+    ? usage.windows.filter((item) => item !== window).slice(0, 2)
+    : [];
+  const planLine = preferences.showPlanDetails ? usagePlanLine(usage) : "";
+  const pace = preferences.showWeeklyPace ? weeklyQuotaPace(window) : null;
 
   return (
-    <div className="usage-dial usage-dial--connected" role="group" aria-label={dialAriaSummary(usage, window)}>
+    <div
+      className="usage-dial usage-dial--connected"
+      role="group"
+      aria-label={dialAriaSummary(usage, window, preferences, pace)}
+    >
       <div className="usage-dial__header">
         <span className="usage-dial__name">{usage.displayName}</span>
         <span
@@ -88,9 +123,34 @@ function UsageDial({ usage }: { usage: ProviderUsage }): ReactElement | null {
         </div>
       </div>
 
-      <span className="usage-dial__footer">{formatResetLabel(window.resetsAt)}</span>
+      {preferences.showResetTimes && (
+        <span className="usage-dial__footer">{formatResetLabel(window.resetsAt)}</span>
+      )}
 
       {planLine && <span className="usage-dial__plan">{planLine}</span>}
+
+      {pace && (
+        <div className={`usage-dial__pace is-${pace.status}`}>
+          <div className="usage-dial__pace-copy">
+            <span>Target {Math.round(pace.targetUsedPercent)}% used</span>
+            <strong>{weeklyPaceLabel(pace)}</strong>
+          </div>
+          <span
+            className="usage-dial__pace-track"
+            aria-hidden="true"
+          >
+            <span
+              className="usage-dial__pace-value"
+              style={{ width: `${pace.actualUsedPercent}%` }}
+            />
+            <span
+              className="usage-dial__pace-target"
+              style={{ left: `${Math.min(99, Math.max(1, pace.targetUsedPercent))}%` }}
+              aria-hidden="true"
+            />
+          </span>
+        </div>
+      )}
 
       {secondaryWindows.length > 0 && (
         <div className="usage-dial__windows">
@@ -112,7 +172,9 @@ function UsageDial({ usage }: { usage: ProviderUsage }): ReactElement | null {
                     style={{ width: `${itemRemaining}%` }}
                   />
                 </span>
-                <span className="usage-dial__window-reset">{formatResetLabel(item.resetsAt)}</span>
+                {preferences.showResetTimes && (
+                  <span className="usage-dial__window-reset">{formatResetLabel(item.resetsAt)}</span>
+                )}
               </div>
             );
           })}
@@ -122,7 +184,13 @@ function UsageDial({ usage }: { usage: ProviderUsage }): ReactElement | null {
   );
 }
 
-export function UsageDials({ onOpenSettings }: { onOpenSettings?: () => void }): ReactElement {
+export function UsageDials({
+  preferences,
+  onOpenSettings,
+}: {
+  preferences: ProviderUsagePreferences;
+  onOpenSettings?: () => void;
+}): ReactElement {
   const { usages, loading, refreshing, error, refresh } = useProviderUsage();
   const connected = usages.filter(
     (usage) => usage.status === "connected" && !isUsageStale(usage) && displayWindow(usage) !== null,
@@ -145,7 +213,7 @@ export function UsageDials({ onOpenSettings }: { onOpenSettings?: () => void }):
     usageContent = (
       <div className="usage-dials">
         {connected.map((usage) => (
-          <UsageDial key={usage.provider} usage={usage} />
+          <UsageDial key={usage.provider} usage={usage} preferences={preferences} />
         ))}
       </div>
     );

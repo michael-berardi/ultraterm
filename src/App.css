@@ -3279,6 +3279,82 @@ button:disabled {
   white-space: nowrap;
 }
 
+.usage-dial__pace {
+  display: grid;
+  width: 100%;
+  gap: 5px;
+  margin-top: 1px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.065);
+}
+
+.usage-dial__pace-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  justify-items: center;
+  text-align: center;
+}
+
+.usage-dial__pace-copy span {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 8.5px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-dial__pace-copy strong {
+  color: var(--text-soft);
+  font-size: 9px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.usage-dial__pace.is-ahead .usage-dial__pace-copy strong {
+  color: var(--working);
+}
+
+.usage-dial__pace.is-behind .usage-dial__pace-copy strong {
+  color: color-mix(in srgb, var(--danger) 76%, var(--text) 24%);
+}
+
+.usage-dial__pace-track {
+  position: relative;
+  display: block;
+  overflow: visible;
+  width: 100%;
+  height: 3px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.usage-dial__pace-value {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--working);
+  transition: width 480ms cubic-bezier(0.2, 0.76, 0.25, 1);
+}
+
+.usage-dial__pace.is-behind .usage-dial__pace-value {
+  background: color-mix(in srgb, var(--danger) 68%, var(--text-soft) 32%);
+}
+
+.usage-dial__pace-target {
+  position: absolute;
+  top: 50%;
+  width: 2px;
+  height: 7px;
+  border-radius: 1px;
+  background: var(--text);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.42);
+  transform: translate(-50%, -50%);
+}
+
 .usage-dial__windows {
   display: grid;
   width: 100%;
@@ -3521,6 +3597,7 @@ button:disabled {
   }
 
   .usage-dial__value,
+  .usage-dial__pace-value,
   .usage-dial__mini-bar > span,
   .history-chart__bar {
     transition: none;

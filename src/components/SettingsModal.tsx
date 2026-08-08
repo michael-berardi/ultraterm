@@ -14,6 +14,7 @@ import {
 import { IntegrationsSettings } from "./IntegrationsSettings";
 import type {
   EffectMode,
+  ProviderUsagePreferences,
   TerminalCursorStyle,
   TerminalPreferences,
   ThemeId,
@@ -55,11 +56,13 @@ interface SettingsModalProps {
   theme: ThemeId;
   effectMode: EffectMode;
   terminalPreferences: TerminalPreferences;
+  providerUsagePreferences: ProviderUsagePreferences;
   /** When set, the modal jumps to this section the next time it opens. */
   initialSection?: SettingsSection;
   onThemeChange: (theme: ThemeId) => void;
   onEffectModeChange: (mode: EffectMode) => void;
   onTerminalPreferencesChange: (preferences: TerminalPreferences) => void;
+  onProviderUsagePreferencesChange: (preferences: ProviderUsagePreferences) => void;
   onClose: () => void;
 }
 
@@ -68,10 +71,12 @@ export function SettingsModal({
   theme,
   effectMode,
   terminalPreferences,
+  providerUsagePreferences,
   initialSection,
   onThemeChange,
   onEffectModeChange,
   onTerminalPreferencesChange,
+  onProviderUsagePreferencesChange,
   onClose,
 }: SettingsModalProps) {
   const [activeSection, setActiveSection] = useState<SettingsSection>("appearance");
@@ -237,7 +242,10 @@ export function SettingsModal({
               aria-labelledby="settings-tab-integrations"
               tabIndex={0}
             >
-              <IntegrationsSettings />
+              <IntegrationsSettings
+                preferences={providerUsagePreferences}
+                onPreferencesChange={onProviderUsagePreferencesChange}
+              />
             </section>
           ) : activeSection === "appearance" ? (
             <section

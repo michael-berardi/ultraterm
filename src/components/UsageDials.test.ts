@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { formatUsageWindowLabel, remainingPercent, usagePlanLine } from "./UsageDials";
+import {
+  displayWindow,
+  formatUsageWindowLabel,
+  remainingPercent,
+  usagePlanLine,
+} from "./UsageDials";
 
 describe("formatUsageWindowLabel", () => {
   it("shows minute-based five-hour windows in human units", () => {
@@ -16,6 +21,25 @@ describe("remainingPercent", () => {
   it("clamps remaining quota to the zero-to-100 range", () => {
     expect(remainingPercent({ label: "Weekly", usedPercent: 21, resetsAt: null })).toBe(79);
     expect(remainingPercent({ label: "Weekly", usedPercent: 130, resetsAt: null })).toBe(0);
+  });
+});
+
+describe("displayWindow", () => {
+  it("leads with provider variants of the weekly quota window", () => {
+    const shortWindow = { label: "5-hour", usedPercent: 80, resetsAt: null };
+    const weeklyWindow = { label: "seven_day", usedPercent: 20, resetsAt: null };
+    const usage = {
+      provider: "codex" as const,
+      displayName: "Codex",
+      plan: null,
+      status: "connected" as const,
+      windows: [shortWindow, weeklyWindow],
+      balance: null,
+      updatedAt: null,
+      error: null,
+    };
+
+    expect(displayWindow(usage)).toBe(weeklyWindow);
   });
 });
 

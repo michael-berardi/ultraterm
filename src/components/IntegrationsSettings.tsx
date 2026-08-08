@@ -5,7 +5,11 @@ import {
   usageStatusLabel,
   useProviderUsage,
 } from "../hooks/useProviderUsage";
-import type { ProviderUsage, UsageProviderId } from "../types";
+import type {
+  ProviderUsage,
+  ProviderUsagePreferences,
+  UsageProviderId,
+} from "../types";
 
 interface ProviderMeta {
   id: UsageProviderId;
@@ -186,7 +190,47 @@ function ProviderCard({ meta, usage }: { meta: ProviderMeta; usage: ProviderUsag
   );
 }
 
-export function IntegrationsSettings(): ReactElement {
+interface IntegrationsSettingsProps {
+  preferences: ProviderUsagePreferences;
+  onPreferencesChange: (preferences: ProviderUsagePreferences) => void;
+}
+
+const DISPLAY_OPTIONS: ReadonlyArray<{
+  id: string;
+  key: keyof ProviderUsagePreferences;
+  name: string;
+  detail: string;
+}> = [
+  {
+    id: "provider-usage-weekly-pace",
+    key: "showWeeklyPace",
+    name: "Weekly spend target",
+    detail: "Compare usage with the even pace needed to reach zero at reset.",
+  },
+  {
+    id: "provider-usage-reset-times",
+    key: "showResetTimes",
+    name: "Reset times",
+    detail: "Show when each visible quota window resets.",
+  },
+  {
+    id: "provider-usage-short-windows",
+    key: "showSecondaryWindows",
+    name: "Short-term limits",
+    detail: "Show five-hour and other secondary quota windows.",
+  },
+  {
+    id: "provider-usage-plan-details",
+    key: "showPlanDetails",
+    name: "Plan details",
+    detail: "Show provider plan and nonzero balance details.",
+  },
+];
+
+export function IntegrationsSettings({
+  preferences,
+  onPreferencesChange,
+}: IntegrationsSettingsProps): ReactElement {
   const { usages, error } = useProviderUsage();
 
   return (
@@ -198,6 +242,39 @@ export function IntegrationsSettings(): ReactElement {
           Keychain and are only sent to the matching provider.
         </p>
       </header>
+
+      <section className="settings-group" aria-labelledby="provider-usage-display-heading">
+        <div>
+          <h4 id="provider-usage-display-heading">Provider usage display</h4>
+          <p>Choose which quota details appear in the workspace sidebar.</p>
+        </div>
+        <div className="settings-preference-group">
+          {DISPLAY_OPTIONS.map((option) => (
+            <label
+              key={option.key}
+              className="settings-preference-row settings-preference-row--toggle"
+              htmlFor={option.id}
+            >
+              <span>
+                <strong>{option.name}</strong>
+                <small>{option.detail}</small>
+              </span>
+              <span className="settings-switch">
+                <input
+                  id={option.id}
+                  type="checkbox"
+                  checked={preferences[option.key]}
+                  onChange={(event) => onPreferencesChange({
+                    ...preferences,
+                    [option.key]: event.currentTarget.checked,
+                  })}
+                />
+                <span aria-hidden="true" />
+              </span>
+            </label>
+          ))}
+        </div>
+      </section>
 
       {error && (
         <p className="provider-card__notice provider-card__notice--error" role="alert">
