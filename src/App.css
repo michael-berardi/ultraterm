@@ -8,8 +8,8 @@
   --sidebar-width: 312px;
   --text: rgba(250, 249, 252, 0.96);
   --text-soft: rgba(238, 236, 242, 0.72);
-  --text-muted: rgba(228, 225, 234, 0.48);
-  --text-faint: rgba(220, 217, 226, 0.3);
+  --text-muted: rgba(228, 225, 234, 0.68);
+  --text-faint: rgba(220, 217, 226, 0.52);
   --glass-fill: rgba(17, 16, 19, 0.7);
   --glass-fill-strong: rgba(13, 12, 15, 0.84);
   --glass-fill-soft: rgba(255, 255, 255, 0.024);
@@ -36,11 +36,11 @@
   --radius-control: 12px;
   --radius-group: 16px;
   --radius-window: 24px;
-  --type-detail: 8px;
-  --type-caption: 9px;
-  --type-control: 10px;
+  --type-detail: 10px;
+  --type-caption: 10.5px;
+  --type-control: 11px;
   --type-section: 13px;
-  --type-label: 11px;
+  --type-label: 12px;
   --type-panel: 16px;
   --type-title: 22px;
   --motion-pane-enter-duration: 220ms;
@@ -73,7 +73,7 @@
 [data-theme="titanium"] {
   --text: rgba(252, 252, 254, 0.97);
   --text-soft: rgba(239, 241, 245, 0.76);
-  --text-muted: rgba(224, 227, 233, 0.53);
+  --text-muted: rgba(224, 227, 233, 0.7);
   --glass-fill: rgba(53, 56, 62, 0.55);
   --glass-fill-strong: rgba(36, 38, 43, 0.77);
   --glass-edge: rgba(255, 255, 255, 0.16);
@@ -411,9 +411,9 @@ button:disabled {
 .brand-mark small {
   margin-top: 5px;
   color: var(--text-muted);
-  font-size: 7px;
+  font-size: 9px;
   font-weight: 660;
-  letter-spacing: 0.19em;
+  letter-spacing: 0.17em;
   line-height: 1;
   text-transform: uppercase;
 }
@@ -476,7 +476,7 @@ button:disabled {
   align-items: center;
   gap: 6px;
   color: var(--text-soft);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 660;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -484,7 +484,7 @@ button:disabled {
 
 .sidebar-section__heading > small {
   color: var(--text-faint);
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .glass-icon-button,
@@ -507,7 +507,7 @@ button:disabled {
   gap: 5px;
   padding: 0 8px;
   color: var(--text-soft);
-  font-size: 9px;
+  font-size: 10.5px;
   font-weight: 650;
   white-space: nowrap;
 }
@@ -531,8 +531,8 @@ button:disabled {
   padding: 1px 5px;
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 5px;
-  color: var(--text-faint);
-  font-size: 7px;
+  color: var(--text-muted);
+  font-size: 8.5px;
   font-weight: 620;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -676,7 +676,7 @@ button:disabled {
 .terminal-list__copy strong {
   overflow: hidden;
   color: var(--text);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 620;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -686,7 +686,7 @@ button:disabled {
 .terminal-list__meta small {
   margin-top: 3px;
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
   text-transform: capitalize;
 }
 
@@ -702,7 +702,7 @@ button:disabled {
   margin-top: 3px;
   color: var(--text-faint);
   font-family: inherit;
-  font-size: 8px;
+  font-size: 9.5px;
 }
 
 .terminal-actions {
@@ -726,7 +726,7 @@ button:disabled {
 .terminal-actions button,
 .sidebar-action-grid button {
   display: inline-flex;
-  min-height: 31px;
+  min-height: 33px;
   align-items: center;
   justify-content: center;
   gap: 5px;
@@ -737,7 +737,7 @@ button:disabled {
   background: rgba(255, 255, 255, 0.035);
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 9px;
+  font-size: 10.5px;
   font-weight: 570;
   transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
 }
@@ -772,7 +772,7 @@ button:disabled {
 .terminal-context-menu strong {
   padding: 5px 7px 7px;
   color: var(--text-soft);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 650;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -790,7 +790,7 @@ button:disabled {
   color: var(--text-muted);
   cursor: pointer;
   font: inherit;
-  font-size: 10px;
+  font-size: 11px;
   text-align: left;
 }
 
@@ -836,7 +836,7 @@ button:disabled {
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 9px;
+  font-size: 10.5px;
   font-weight: 590;
 }
 
@@ -947,7 +947,7 @@ button:disabled {
 .theme-card strong,
 .effect-list strong {
   overflow: hidden;
-  font-size: 9px;
+  font-size: 10.5px;
   font-weight: 630;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -958,7 +958,7 @@ button:disabled {
   margin-top: 2px;
   overflow: hidden;
   color: var(--text-faint);
-  font-size: 7px;
+  font-size: 9px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1038,7 +1038,7 @@ button:disabled {
 .system-metrics dt,
 .system-metrics dd {
   margin: 0;
-  font-size: 9px;
+  font-size: 10.5px;
 }
 
 .system-metrics dt {
@@ -1067,13 +1067,13 @@ button:disabled {
 
 .sidebar-notice strong {
   color: var(--danger);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .sidebar-notice p {
   margin: 4px 0 0;
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
   line-height: 1.45;
   user-select: text;
 }
@@ -1374,7 +1374,33 @@ button:disabled {
 }
 
 .workspace-rail__system .sidebar-section__heading > span {
-  font-size: 9px;
+  font-size: 10px;
+}
+
+.workspace-rail__restart {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  border: 1px solid var(--control-border);
+  border-radius: 8px;
+  background: var(--control-fill);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 620;
+}
+
+.workspace-rail__restart:hover {
+  border-color: var(--control-border-strong);
+  background: var(--control-fill-hover);
+  color: var(--text);
+}
+
+.workspace-rail__restart:focus-visible {
+  outline: 2px solid var(--accent-soft);
+  outline-offset: 1px;
 }
 
 .terminal-list__empty {
@@ -1386,7 +1412,7 @@ button:disabled {
   border: 1px dashed rgba(255, 255, 255, 0.09);
   border-radius: 13px;
   color: var(--text-faint);
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .settings-launcher {
@@ -1468,6 +1494,7 @@ button:disabled {
 .token-today {
   display: grid;
   gap: 6px;
+  justify-items: center;
   padding: 10px 11px 11px;
   border: 1px solid rgba(255, 255, 255, 0.075);
   border-top-color: rgba(255, 255, 255, 0.13);
@@ -1476,8 +1503,8 @@ button:disabled {
 }
 
 .token-today__label {
-  color: var(--text-faint);
-  font-size: 8px;
+  color: var(--text-soft);
+  font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -1488,6 +1515,7 @@ button:disabled {
   font-weight: 580;
   letter-spacing: -0.03em;
   line-height: 1.1;
+  text-align: center;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1520,7 +1548,7 @@ button:disabled {
   background: var(--control-fill);
   color: var(--text-soft);
   cursor: pointer;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 620;
 }
 
@@ -2102,14 +2130,14 @@ button:disabled {
 }
 
 .controller-status-button strong {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 620;
 }
 
 .controller-status-button small {
   margin-top: 2px;
   color: var(--text-muted);
-  font-size: 8px;
+  font-size: 10px;
 }
 
 .controller-status-button:hover {
@@ -2938,7 +2966,7 @@ button:disabled {
   border-radius: 9px;
   background: color-mix(in srgb, var(--danger) 7%, transparent);
   color: var(--danger);
-  font-size: 9px;
+  font-size: 10px;
   line-height: 1.45;
 }
 
@@ -2946,7 +2974,7 @@ button:disabled {
   margin: 0;
   padding: 8px 9px;
   color: var(--text-faint);
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .usage-configure {
@@ -2981,13 +3009,13 @@ button:disabled {
 
 .usage-configure strong {
   color: var(--text-soft);
-  font-size: 9px;
+  font-size: 10.5px;
   font-weight: 640;
 }
 
 .usage-configure small {
   color: var(--text-faint);
-  font-size: 8px;
+  font-size: 9.5px;
 }
 
 .usage-dials {
@@ -3024,7 +3052,7 @@ button:disabled {
 .usage-dial__name {
   overflow: hidden;
   color: var(--text-soft);
-  font-size: 8px;
+  font-size: 9.5px;
   font-weight: 660;
   letter-spacing: 0.09em;
   text-overflow: ellipsis;
@@ -3134,7 +3162,7 @@ button:disabled {
   max-width: 100%;
   overflow: hidden;
   color: var(--text-faint);
-  font-size: 7px;
+  font-size: 9px;
   letter-spacing: 0.04em;
   text-overflow: ellipsis;
   text-transform: uppercase;
@@ -3145,7 +3173,7 @@ button:disabled {
   max-width: 100%;
   overflow: hidden;
   color: var(--text-muted);
-  font-size: 8px;
+  font-size: 9.5px;
   font-variant-numeric: tabular-nums;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3159,7 +3187,7 @@ button:disabled {
   max-width: 100%;
   overflow: hidden;
   color: var(--text-faint);
-  font-size: 8px;
+  font-size: 9.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3181,7 +3209,7 @@ button:disabled {
 .usage-dial__window-label {
   overflow: hidden;
   color: var(--text-faint);
-  font-size: 7px;
+  font-size: 9px;
   letter-spacing: 0.03em;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3208,7 +3236,7 @@ button:disabled {
 
 .usage-dial__window-value {
   color: var(--text-muted);
-  font-size: 7px;
+  font-size: 9px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -3268,7 +3296,7 @@ button:disabled {
   border: 1px solid var(--control-border);
   border-radius: 999px;
   color: var(--text-faint);
-  font-size: 8px;
+  font-size: 9px;
   letter-spacing: 0.05em;
   text-transform: uppercase;
   white-space: nowrap;
@@ -3301,7 +3329,7 @@ button:disabled {
 
 .provider-card__field label {
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.03em;
 }
@@ -3314,7 +3342,7 @@ button:disabled {
   border-radius: var(--radius-small);
   background: var(--glass-fill-strong);
   color: var(--text-soft);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .provider-card__field input:hover {

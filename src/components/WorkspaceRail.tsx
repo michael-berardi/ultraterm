@@ -24,6 +24,7 @@ import {
 import { HistoryModal } from "./HistoryModal";
 import { SettingsModal, type SettingsSection } from "./SettingsModal";
 import { UsageDials } from "./UsageDials";
+import { restartApp } from "../lib/terminalApi";
 import {
   LAUNCH_PROFILE_OPTIONS,
   launchProfileLabel,
@@ -350,18 +351,6 @@ export function WorkspaceRail({
           <section className="sidebar-section sidebar-section--terminals" aria-label="Terminals">
             <div className="sidebar-section__heading sidebar-section__heading--actions-only">
               <div className="terminal-header-actions">
-                <button
-                  type="button"
-                  className="glass-icon-button"
-                  onClick={() => {
-                    setSettingsSection("appearance");
-                    setSettingsOpen(true);
-                  }}
-                  aria-label="Open settings"
-                  title="Settings"
-                >
-                  <Settings size={13} />
-                </button>
                 <div className="terminal-launch">
                   <button
                     type="button"
@@ -526,6 +515,20 @@ export function WorkspaceRail({
         <footer className="workspace-rail__system" aria-label="System memory">
           <div className="sidebar-section__heading">
             <span><Cpu size={13} /> System</span>
+            <button
+              type="button"
+              className="workspace-rail__restart"
+              onClick={() => {
+                void restartApp().catch((error) => {
+                  console.error("UltraTerm restart failed", error);
+                });
+              }}
+              aria-label="Restart UltraTerm"
+              title="Restart UltraTerm — terminals keep running and reattach"
+            >
+              <RotateCcw size={11} />
+              <span>Restart</span>
+            </button>
           </div>
           <dl className="system-metrics">
             <div>

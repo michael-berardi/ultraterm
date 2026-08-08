@@ -108,6 +108,14 @@ export function maintenanceReport(): Promise<MaintenanceReport | null> {
   return invoke("maintenance_report");
 }
 
+/**
+ * Gracefully relaunch UltraTerm. Terminal sessions persist in tmux and
+ * reattach automatically once the new instance boots.
+ */
+export function restartApp(): Promise<void> {
+  return invoke("restart_app");
+}
+
 export function voiceHealth(): Promise<VoiceServiceResponse> {
   return invoke("voice_health");
 }

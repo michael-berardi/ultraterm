@@ -439,6 +439,10 @@ fn cleanup_thread(rx: mpsc::Receiver<String>, manager: Arc<Mutex<SessionManager>
     }
 }
 
+fn shell_escape(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+}
+
 fn validate_size(cols: u32, rows: u32) -> Result<PtySize, String> {
     if cols == 0 || rows == 0 || cols > MAX_COLS || rows > MAX_ROWS {
         Err(format!(
@@ -775,7 +779,7 @@ fn kill_persistent_slot(slot: u32) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn remove_persistent_slot(slot: u32) -> Result<(), String> {
     if !(1..=MAX_SESSION_SLOT).contains(&slot) {
         return Err(format!(
@@ -785,7 +789,7 @@ fn remove_persistent_slot(slot: u32) -> Result<(), String> {
     kill_persistent_slot(slot)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_persistent_slots() -> Result<Vec<PersistentSlotInfo>, String> {
     let Some(tmux_path) = telemetry::tmux_binary()? else {
         return Ok(Vec::new());
@@ -889,7 +893,9 @@ fn resize_session(
     manager.resize_session(&id, cols, rows)
 }
 
-#[tauri::command]
+// Runs tmux subprocesses per wheel frame in the alternate buffer; must not
+// block the main thread while the user is typing.
+#[tauri::command(async)]
 fn scroll_session(
     id: String,
     lines: i32,
@@ -1006,7 +1012,9 @@ fn process_tree_memory_bytes(system: &System, roots: &HashSet<Pid>) -> u64 {
         .sum()
 }
 
-#[tauri::command]
+// Heavy work (full process refresh + tmux subprocess) must not run on the
+// main thread: it fires on terminal-output bursts and stalls keystroke IPC.
+#[tauri::command(async)]
 fn system_metrics(
     state: State<Arc<Mutex<SessionManager>>>,
     metrics_system: State<MetricsSystem>,
@@ -1048,7 +1056,9 @@ fn system_metrics(
     })
 }
 
-#[tauri::command]
+// Parses session JSONL files; keep it off the main thread so typing echo
+// is never blocked by telemetry refreshes.
+#[tauri::command(async)]
 fn token_telemetry(
     state: State<Arc<Mutex<TokenTelemetryManager>>>,
 ) -> Result<TokenTelemetry, String> {
@@ -1106,6 +1116,44 @@ async fn cancel_voice_input(
     dictator_client::cancel_recording(&recording_id).await
 }
 
+/// Gracefully relaunch UltraTerm. The current process exits normally, so the
+/// RunEvent::Exit handler detaches every terminal client while the tmux-backed
+/// sessions keep running; a detached helper waits for the process to die
+/// before opening a fresh instance, so the single-instance plugin can never
+/// swallow the relaunch. Bootstrap then reattaches every live tmux slot and
+/// the workspace resumes exactly where it left off.
+#[tauri::command(async)]
+fn restart_app(app: AppHandle) -> Result<(), String> {
+    let pid = process::id();
+    let exe = std::env::current_exe()
+        .map_err(|error| format!("Failed to resolve UltraTerm executable: {error}"))?;
+    // Inside a macOS bundle, relaunch through `open` so LaunchServices starts
+    // a clean instance; otherwise re-exec the binary directly (dev runs).
+    let bundle = exe
+        .ancestors()
+        .find(|path| path.extension().is_some_and(|ext| ext == "app"))
+        .map(Path::to_path_buf);
+    let script = match &bundle {
+        Some(bundle) => format!(
+            "while kill -0 {pid} 2>/dev/null; do sleep 0.2; done; exec open -n {}",
+            shell_escape(bundle),
+        ),
+        None => format!(
+            "while kill -0 {pid} 2>/dev/null; do sleep 0.2; done; exec {}",
+            shell_escape(&exe),
+        ),
+    };
+    process::Command::new("/bin/sh")
+        .args(["-c", &script])
+        .stdin(process::Stdio::null())
+        .stdout(process::Stdio::null())
+        .stderr(process::Stdio::null())
+        .spawn()
+        .map_err(|error| format!("Failed to schedule UltraTerm relaunch: {error}"))?;
+    app.exit(0);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1150,6 +1198,7 @@ pub fn run() {
             token_telemetry,
             search_history,
             maintenance_report,
+            restart_app,
             provider_usage::provider_usage,
             provider_usage::save_provider_credential,
             provider_usage::remove_provider_credential,
@@ -1186,6 +1235,18 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_escape_neutralizes_embedded_quotes() {
+        assert_eq!(
+            shell_escape(Path::new("/Applications/UltraTerm.app")),
+            "'/Applications/UltraTerm.app'",
+        );
+        assert_eq!(
+            shell_escape(Path::new("/tmp/it's $(rm -rf x)")),
+            "'/tmp/it'\\''s $(rm -rf x)'",
+        );
+    }
 
     #[test]
     fn accepts_valid_terminal_size() {

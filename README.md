@@ -61,7 +61,25 @@ npm run tauri build
 Build artifacts:
 
 - `src-tauri/target/release/bundle/macos/UltraTerm.app`
-- `src-tauri/target/release/bundle/dmg/UltraTerm_0.1.0_aarch64.dmg`
+- `src-tauri/target/release/bundle/dmg/UltraTerm_0.2.0_aarch64.dmg`
+
+## Self-update and restart
+
+UltraTerm restarts itself cleanly — no installer package required. Terminal
+sessions are tmux-backed, so every OMP session survives an app restart and
+reattaches automatically when the new instance boots.
+
+- **In-app**: use the **Restart** button in the System section of the side
+  rail. UltraTerm detaches its terminal clients, exits, and relaunches; the
+  workspace resumes with the same terminals.
+- **From a terminal (including one inside UltraTerm)**:
+
+```sh
+scripts/self-update.sh            # build, swap into /Applications, restart
+scripts/self-update.sh --restart  # install the current build and restart
+```
+
+The previous install is preserved under `.app-backup/` before each swap.
 
 ## Controls
 
