@@ -60,14 +60,11 @@ pub enum LaunchProfile {
 }
 
 impl LaunchProfile {
-    fn omp_profile_override(self, inherited_profile: Option<&OsStr>) -> Option<&'static str> {
+    fn omp_profile(self) -> &'static str {
         match self {
-            Self::Default => match inherited_profile {
-                Some(profile) if !profile.is_empty() => None,
-                _ => Some("lds"),
-            },
-            Self::GptOnly => Some("gpt-only"),
-            Self::KimiK3 => Some("kimi-k3"),
+            Self::Default => "lds",
+            Self::GptOnly => "gpt-only",
+            Self::KimiK3 => "kimi-k3",
         }
     }
 }
@@ -914,8 +911,8 @@ fn build_command(
             .and_then(|tmux_path| recorded_persistent_profile(&tmux_path, &session_name));
         if let Some(profile) = recorded_profile {
             cmd.env("OMP_PROFILE", profile);
-        } else if let Some(profile) = launch_profile.omp_profile_override(cmd.get_env("OMP_PROFILE")) {
-            cmd.env("OMP_PROFILE", profile);
+        } else {
+            cmd.env("OMP_PROFILE", launch_profile.omp_profile());
         }
         cmd.env("PATH", path);
         cmd.env("TERM", "xterm-256color");
@@ -1439,31 +1436,14 @@ mod tests {
     }
 
     #[test]
-    fn launch_profile_preserves_inherited_or_selects_deterministic_override() {
-        assert_eq!(
-            LaunchProfile::Default.omp_profile_override(Some(OsStr::new("lds"))),
-            None
-        );
-        assert_eq!(
-            LaunchProfile::Default.omp_profile_override(Some(OsStr::new(""))),
-            Some("lds")
-        );
-        assert_eq!(
-            LaunchProfile::Default.omp_profile_override(None),
-            Some("lds")
-        );
-        assert_eq!(
-            LaunchProfile::GptOnly.omp_profile_override(Some(OsStr::new("lds"))),
-            Some("gpt-only")
-        );
-        assert_eq!(
-            LaunchProfile::KimiK3.omp_profile_override(Some(OsStr::new("lds"))),
-            Some("kimi-k3")
-        );
+    fn launch_profiles_map_to_omp_profiles() {
+        assert_eq!(LaunchProfile::Default.omp_profile(), "lds");
+        assert_eq!(LaunchProfile::GptOnly.omp_profile(), "gpt-only");
+        assert_eq!(LaunchProfile::KimiK3.omp_profile(), "kimi-k3");
     }
 
     #[test]
-    fn omitted_launch_profile_defaults_to_inherited_profile() {
+    fn omitted_launch_profile_uses_default() {
         let request: CreateSessionRequest = serde_json::from_value(serde_json::json!({
             "slot": 1,
             "cols": 80,

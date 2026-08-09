@@ -40,7 +40,7 @@ export interface LaunchProfileOption {
 }
 
 export const LAUNCH_PROFILE_OPTIONS: ReadonlyArray<LaunchProfileOption> = [
-  { id: "default", label: "Default", description: "Inherit the current OMP setup" },
+  { id: "default", label: "Default", description: "Launch the mixed Kimi, Sol, and Luna OMP profile" },
   { id: "gpt-only", label: "GPT only", description: "Launch with the gpt-only OMP profile" },
   { id: "kimi-k3", label: "Kimi K3", description: "Launch with the kimi-k3 OMP profile" },
 ];
