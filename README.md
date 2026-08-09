@@ -5,17 +5,38 @@ UltraTerm is a macOS desktop workspace for running multiple Oh My Pi (OMP) termi
 ## Requirements
 
 - macOS on Apple Silicon
-- Rust toolchain
-- Node.js and npm
-- `tmux` available on `PATH` or configured with `TMUX_BIN`
 - OMP available on `PATH` or configured with `OMP_BIN`
+- `tmux` is recommended for persistent sessions; UltraTerm falls back to a
+  direct OMP session when it is unavailable
+
+Node.js and Rust are required only when building from source.
+
+## Installation
+
+For an AI agent or a user account install (no compiler or `sudo` required):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/michael-berardi/ultraterm/main/install.sh | bash
+```
+
+This installs the prebuilt app to `~/Applications/UltraTerm.app`. The resilient
+`omp-safe` launcher is bundled inside the app. For a machine-wide install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/michael-berardi/ultraterm/main/install.sh | bash -s -- --system
+```
+
+The installer verifies the published SHA-256 checksum and macOS code signature.
+Release assets are also available from
+[GitHub Releases](https://github.com/michael-berardi/ultraterm/releases).
 
 ## Resilient launcher
 
-UltraTerm uses the `scripts/omp-safe` launcher for persistent tmux-backed OMP sessions. Install it in any directory on `PATH`, or point UltraTerm to it explicitly:
+UltraTerm bundles the `scripts/omp-safe` launcher used for persistent
+tmux-backed OMP sessions. A source checkout can override it during development:
 
 ```sh
-ULTRATERM_OMP_LAUNCHER="$PWD/scripts/omp-safe" npm run tauri dev
+ULTRATERM_OMP_LAUNCHER=\"$PWD/scripts/omp-safe\" npm run tauri dev
 ```
 
 Each matrix slot receives its own `ultraterm-matrix-N` tmux session. The session survives app restarts, automatically resumes OMP after an unexpected process exit, and hides tmux's status bar inside UltraTerm.
@@ -61,25 +82,36 @@ npm run tauri build
 Build artifacts:
 
 - `src-tauri/target/release/bundle/macos/UltraTerm.app`
-- `src-tauri/target/release/bundle/dmg/UltraTerm_0.2.0_aarch64.dmg`
+- `src-tauri/target/release/bundle/dmg/UltraTerm_<version>_aarch64.dmg`
 
-## Self-update and restart
+## Updating and restarting
 
-UltraTerm restarts itself cleanly — no installer package required. Terminal
-sessions are tmux-backed, so every OMP session survives an app restart and
-reattaches automatically when the new instance boots.
+Re-run the installer to download and atomically replace UltraTerm with the
+latest published release. Terminal sessions are tmux-backed, so OMP sessions
+survive the app restart and reattach when UltraTerm opens again.
 
-- **In-app**: use the **Restart** button in the System section of the side
-  rail. UltraTerm detaches its terminal clients, exits, and relaunches; the
-  workspace resumes with the same terminals.
-- **From a terminal (including one inside UltraTerm)**:
-
-```sh
-scripts/self-update.sh            # build, swap into /Applications, restart
-scripts/self-update.sh --restart  # install the current build and restart
+```bash
+curl -fsSL https://raw.githubusercontent.com/michael-berardi/ultraterm/main/install.sh | bash
 ```
 
-The previous install is preserved under `.app-backup/` before each swap.
+For local development builds, `scripts/self-update.sh` still builds, swaps the
+app into `/Applications`, and restarts it. The previous development install is
+preserved under `.app-backup/`.
+
+## Publishing a release
+
+Releases are built locally, Developer ID signed, notarized, checksum-staged,
+and published without GitHub Actions:
+
+```bash
+export APPLE_SIGNING_IDENTITY=\"Developer ID Application: …\"
+export APPLE_INSTALLER_SIGNING_IDENTITY=\"Developer ID Installer: …\"
+export NOTARYTOOL_PROFILE=\"your-keychain-profile\"
+npm run release:publish
+```
+
+`npm run release:package` only stages the `.zip`, `.pkg`, and checksum assets in
+`dist/release/`. Publishing additionally requires an authenticated GitHub CLI.
 
 ## Controls
 

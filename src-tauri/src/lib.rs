@@ -871,6 +871,20 @@ fn list_persistent_slots() -> Result<Vec<PersistentSlotInfo>, String> {
     }
     Ok(parse_persistent_slot_infos(&output.stdout))
 }
+fn bundled_omp_launcher_path(executable: &Path) -> Option<PathBuf> {
+    Some(
+        executable
+            .parent()?
+            .parent()?
+            .join("Resources")
+            .join("omp-safe"),
+    )
+}
+
+fn bundled_omp_launcher() -> Option<PathBuf> {
+    let launcher = bundled_omp_launcher_path(&std::env::current_exe().ok()?)?;
+    launcher.is_file().then_some(launcher)
+}
 
 fn build_command(
     slot: u32,
@@ -883,14 +897,18 @@ fn build_command(
         let path = command_search_path()?;
         // Finder/Dock launches inherit a bare launchd PATH without the user's
         // bin dirs, so probe the conventional install locations explicitly.
-        let home_fallbacks: Vec<PathBuf> = home_dir()
-            .map(|home| vec![home.join("bin/omp-safe"), home.join(".local/bin/omp-safe")])
-            .unwrap_or_default();
-        let home_fallback_refs: Vec<&Path> = home_fallbacks.iter().map(PathBuf::as_path).collect();
+        let mut launcher_fallbacks: Vec<PathBuf> = bundled_omp_launcher().into_iter().collect();
+        launcher_fallbacks.extend(
+            home_dir()
+                .map(|home| vec![home.join("bin/omp-safe"), home.join(".local/bin/omp-safe")])
+                .unwrap_or_default(),
+        );
+        let launcher_fallback_refs: Vec<&Path> =
+            launcher_fallbacks.iter().map(PathBuf::as_path).collect();
         let omp_path = resolve_optional_executable(
             "ULTRATERM_OMP_LAUNCHER",
             "omp-safe",
-            &home_fallback_refs,
+            &launcher_fallback_refs,
         )?
         .ok_or_else(|| {
             "OMP launcher not found. Install scripts/omp-safe on ULTRATERM_PATH or PATH, or set ULTRATERM_OMP_LAUNCHER to its executable path."
@@ -1451,6 +1469,17 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(request.launch_profile, LaunchProfile::Default);
+    }
+
+    #[test]
+    fn bundled_launcher_resolves_from_macos_app_resources() {
+        let executable = Path::new("/Applications/UltraTerm.app/Contents/MacOS/ultraterm");
+        assert_eq!(
+            bundled_omp_launcher_path(executable),
+            Some(PathBuf::from(
+                "/Applications/UltraTerm.app/Contents/Resources/omp-safe"
+            ))
+        );
     }
 
     #[test]

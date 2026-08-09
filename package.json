@@ -14,6 +14,8 @@
     "app:build": "tauri build",
     "pkg:build": "./scripts/build-pkg.sh",
     "pkg:verify": "./scripts/verify-pkg.sh",
+    "release:package": "./scripts/package-release.sh",
+    "release:publish": "./scripts/publish-release.sh",
     "tauri": "tauri"
   },
   "dependencies": {

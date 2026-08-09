@@ -44,6 +44,9 @@
     "shortDescription": "A unified liquid-glass OMP terminal workspace.",
     "longDescription": "UltraTerm consolidates persistent OMP terminal sessions into one responsive liquid-glass desktop workspace.",
     "targets": "all",
+    "resources": {
+      "../scripts/omp-safe": "omp-safe"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
