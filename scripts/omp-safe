@@ -50,6 +50,18 @@ if [ -n "$CONFIGURED_CAFFEINATE_BIN" ] && [ -z "$CAFFEINATE_BIN" ]; then
   exit 127
 fi
 
+# Secrets (OPENROUTER_API_KEY et al.) live in an env file, never on command
+# lines: tmux session-creation commands are visible to every local process
+# via ps. The file wins over inherited env so it stays the single source of
+# truth. Sourced on every invocation, including __worker re-entries.
+ULTRATERM_ENV_FILE="${ULTRATERM_ENV_FILE:-$HOME/.ultraterm/env}"
+if [ -f "$ULTRATERM_ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$ULTRATERM_ENV_FILE"
+  set +a
+fi
+
 omp_version() {
   "$OMP_BIN" --version 2>/dev/null || "$OMP_BIN" version 2>/dev/null || echo "unknown"
 }
@@ -81,13 +93,9 @@ run_omp_once() {
 
 exec_omp_with_env() {
   if [ -n "$OMP_PROFILE" ]; then
-    exec env OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-${OPENROUTER_OPENCODE_API_KEY:-}}" \
-      OPENROUTER_OPENCODE_API_KEY="${OPENROUTER_OPENCODE_API_KEY:-${OPENROUTER_API_KEY:-}}" \
-      "$OMP_BIN" "--profile=$OMP_PROFILE" "$@"
+    exec "$OMP_BIN" "--profile=$OMP_PROFILE" "$@"
   else
-    exec env OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-${OPENROUTER_OPENCODE_API_KEY:-}}" \
-      OPENROUTER_OPENCODE_API_KEY="${OPENROUTER_OPENCODE_API_KEY:-${OPENROUTER_API_KEY:-}}" \
-      "$OMP_BIN" "$@"
+    exec "$OMP_BIN" "$@"
   fi
 }
 
@@ -266,9 +274,9 @@ worker_command=("$0" __worker "$@")
 if [ -n "$CAFFEINATE_BIN" ]; then
   worker_command=("$CAFFEINATE_BIN" -dimsu "${worker_command[@]}")
 fi
+# Only non-secret configuration goes on the tmux command line; the worker
+# re-sources ULTRATERM_ENV_FILE for secrets.
 cmd=$(tmux_shell_quote env \
-  OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-${OPENROUTER_OPENCODE_API_KEY:-}}" \
-  OPENROUTER_OPENCODE_API_KEY="${OPENROUTER_OPENCODE_API_KEY:-${OPENROUTER_API_KEY:-}}" \
   PATH="$PATH" \
   OMP_BIN="$OMP_BIN" \
   OMP_PROFILE="$OMP_PROFILE" \
