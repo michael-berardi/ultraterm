@@ -503,7 +503,11 @@ export function useTerminalWorkspace(sessionCap: number) {
       const occupiedSlots = new Set(existing.map((session) => session.slot));
       const savedRows = readTerminalLaunchRows(sessionCap);
       const persistentSlots = await listPersistentSlots();
-      const restorablePersistentSlots = persistentSlots.filter((info) => info.slot <= sessionCap);
+      // Live tmux sessions are the source of truth: restore every one of them.
+      // The display cap limits NEW panes only — filtering live slots here would
+      // feed them to cleanupOrphanSlots below and kill them on every restart
+      // that boots on a smaller display.
+      const restorablePersistentSlots = persistentSlots;
       let rowsToRestore: TerminalLaunchRow[];
       if (restorablePersistentSlots.length > 0) {
         // Live tmux sessions are the source of truth: restore exactly those

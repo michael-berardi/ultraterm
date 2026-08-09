@@ -295,7 +295,7 @@ function App(): ReactElement {
   });
   const [effectMode, setEffectMode] = useState<EffectMode>(() => {
     const stored = localStorage.getItem(EFFECT_MODE_STORAGE_KEY);
-    return stored === "off" || stored === "ambient" || stored === "focus" || stored === "spectrum"
+    return stored === "off" || stored === "focus" || stored === "spectrum"
       ? stored
       : "focus";
   });

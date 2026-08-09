@@ -695,6 +695,21 @@ fn persistent_session_name(slot: u32) -> String {
     format!("ultraterm-matrix-{slot}")
 }
 
+/// Reads the launch profile a live persistent tmux session recorded at
+/// creation, so a reattach can force the matching omp-safe identity instead
+/// of relying on the profile env this app instance inherited.
+fn recorded_persistent_profile(tmux_path: &Path, session_name: &str) -> Option<String> {
+    let output = process::Command::new(tmux_path)
+        .args(["show-options", "-qv", "-t", session_name, "@omp-profile"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let profile = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!profile.is_empty()).then_some(profile)
+}
+
 #[derive(Clone, Copy)]
 struct ProcessIdentity {
     pid: Pid,
@@ -888,8 +903,18 @@ fn build_command(
         let mut cmd = CommandBuilder::new(&omp_path);
         cmd.env_remove("TMUX");
         cmd.env_remove("TMUX_PANE");
-        cmd.env("OMP_TMUX_SESSION", session_name);
-        if let Some(profile) = launch_profile.omp_profile_override(cmd.get_env("OMP_PROFILE")) {
+        cmd.env("OMP_TMUX_SESSION", &session_name);
+        // A live persistent session's recorded profile is the source of truth:
+        // force it so omp-safe computes the matching identity and reattaches,
+        // regardless of the OMP_PROFILE this app instance happened to inherit
+        // (e.g. relaunched via `open -n` from a terminal inside a session).
+        let recorded_profile = telemetry::tmux_binary()
+            .ok()
+            .flatten()
+            .and_then(|tmux_path| recorded_persistent_profile(&tmux_path, &session_name));
+        if let Some(profile) = recorded_profile {
+            cmd.env("OMP_PROFILE", profile);
+        } else if let Some(profile) = launch_profile.omp_profile_override(cmd.get_env("OMP_PROFILE")) {
             cmd.env("OMP_PROFILE", profile);
         }
         cmd.env("PATH", path);

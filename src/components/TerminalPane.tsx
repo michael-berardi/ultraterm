@@ -33,10 +33,10 @@ interface TerminalPaneProps {
 
 
 const TERMINAL_THEME = {
-  background: "#030304",
+  background: "#000000",
   foreground: "#ececf0",
   cursor: "#ffffff",
-  cursorAccent: "#111114",
+  cursorAccent: "#000000",
   selectionBackground: "#9f9aaf66",
   scrollbarSliderBackground: "rgba(116, 116, 124, 0.46)",
   scrollbarSliderHoverBackground: "rgba(142, 142, 150, 0.62)",

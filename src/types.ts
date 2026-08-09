@@ -1,5 +1,5 @@
 export type ThemeId = "oled" | "aurora" | "titanium" | "ember";
-export type EffectMode = "off" | "ambient" | "focus" | "spectrum";
+export type EffectMode = "off" | "focus" | "spectrum";
 export type TerminalCursorStyle = "bar" | "block" | "underline";
 
 export interface TerminalPreferences {

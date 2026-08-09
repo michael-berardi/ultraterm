@@ -8,7 +8,6 @@ import {
   Palette,
   Sparkles,
   TerminalSquare,
-  Waves,
   X,
 } from "lucide-react";
 import { IntegrationsSettings } from "./IntegrationsSettings";
@@ -21,7 +20,7 @@ import type {
 } from "../types";
 
 const THEMES: Array<{ id: ThemeId; name: string; detail: string }> = [
-  { id: "oled", name: "Obsidian OLED", detail: "Pure black · smoked crystal" },
+  { id: "oled", name: "Obsidian OLED", detail: "Pure black · pixel-crisp contrast" },
   { id: "titanium", name: "Titanium", detail: "Machined silver · cool depth" },
   { id: "aurora", name: "Aurora", detail: "Polar color · midnight glass" },
   { id: "ember", name: "Ember", detail: "Warm carbon · quiet radiance" },
@@ -33,10 +32,9 @@ const EFFECTS: Array<{
   detail: string;
   icon: typeof Sparkles;
 }> = [
-  { id: "off", name: "Still", detail: "No motion; the lowest visual load", icon: CircleOff },
-  { id: "ambient", name: "Ambient", detail: "Static caustics with a restrained visual load", icon: Waves },
-  { id: "focus", name: "Focus", detail: "A restrained halo follows the active terminal", icon: Focus },
-  { id: "spectrum", name: "Spectrum", detail: "A subtle refracted color field", icon: Sparkles },
+  { id: "off", name: "Still", detail: "Pure black canvas · zero motion", icon: CircleOff },
+  { id: "focus", name: "Focus", detail: "A crisp light ring marks the active terminal", icon: Focus },
+  { id: "spectrum", name: "Spectrum", detail: "A slow prismatic glow drifts behind the workspace", icon: Sparkles },
 ];
 
 const FONT_SIZES = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18] as const;
