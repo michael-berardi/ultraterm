@@ -219,12 +219,6 @@ const DISPLAY_OPTIONS: ReadonlyArray<{
     name: "Short-term limits",
     detail: "Show five-hour and other secondary quota windows.",
   },
-  {
-    id: "provider-usage-plan-details",
-    key: "showPlanDetails",
-    name: "Plan details",
-    detail: "Show provider plan and nonzero balance details.",
-  },
 ];
 
 export function IntegrationsSettings({

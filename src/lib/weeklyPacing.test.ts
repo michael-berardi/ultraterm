@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isWeeklyUsageWindow, weeklyPaceLabel, weeklyQuotaPace } from "./weeklyPacing";
+import { isWeeklyUsageWindow, weeklyQuotaPace } from "./weeklyPacing";
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 7, 8, 12);
@@ -37,9 +37,6 @@ describe("weekly quota pacing", () => {
     expect(ahead?.status).toBe("ahead");
     expect(onPace?.status).toBe("on-pace");
     expect(behind?.status).toBe("behind");
-    expect(weeklyPaceLabel(ahead!)).toMatch(/percent ahead$/);
-    expect(weeklyPaceLabel(onPace!)).toBe("On pace");
-    expect(weeklyPaceLabel({ ...ahead!, deltaPercent: 1.2 })).toBe("1 percent ahead");
   });
 
   it("returns no pace without a weekly reset anchor", () => {

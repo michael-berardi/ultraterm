@@ -29,10 +29,6 @@ export function parseProviderUsagePreferences(value: string | null): ProviderUsa
         parsed.showSecondaryWindows,
         DEFAULT_PROVIDER_USAGE_PREFERENCES.showSecondaryWindows,
       ),
-      showPlanDetails: booleanPreference(
-        parsed.showPlanDetails,
-        DEFAULT_PROVIDER_USAGE_PREFERENCES.showPlanDetails,
-      ),
     };
   } catch {
     return { ...DEFAULT_PROVIDER_USAGE_PREFERENCES };

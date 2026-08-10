@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   displayWindow,
   formatUsageWindowLabel,
+  paceDialGeometry,
   remainingPercent,
-  usagePlanLine,
 } from "./UsageDials";
 
 describe("formatUsageWindowLabel", () => {
@@ -41,21 +41,48 @@ describe("displayWindow", () => {
 
     expect(displayWindow(usage)).toBe(weeklyWindow);
   });
-});
 
-describe("usagePlanLine", () => {
-  it("hides a zero balance while retaining meaningful plan context", () => {
+  it("omits providers that do not report a weekly quota", () => {
     const usage = {
       provider: "codex" as const,
       displayName: "Codex",
-      plan: "pro",
+      plan: "Pro",
       status: "connected" as const,
-      windows: [],
-      balance: "0",
+      windows: [{ label: "5-hour", usedPercent: 20, resetsAt: null }],
+      balance: null,
       updatedAt: null,
       error: null,
     };
-    expect(usagePlanLine(usage)).toBe("pro");
-    expect(usagePlanLine({ ...usage, balance: "12.5" })).toBe("pro · 12.5");
+
+    expect(displayWindow(usage)).toBeNull();
+  });
+});
+
+describe("paceDialGeometry", () => {
+  it("places the variance arc strictly between actual and target remaining quota", () => {
+    const overspend = paceDialGeometry({
+      actualUsedPercent: 65,
+      targetUsedPercent: 43,
+      status: "ahead",
+    });
+    const underspend = paceDialGeometry({
+      actualUsedPercent: 24,
+      targetUsedPercent: 43,
+      status: "behind",
+    });
+
+    expect(overspend).toMatchObject({
+      actualRemaining: 35,
+      targetRemaining: 57,
+      gapStart: 35,
+      gapLength: 22,
+    });
+    expect(underspend).toMatchObject({
+      actualRemaining: 76,
+      targetRemaining: 57,
+      gapStart: 57,
+      gapLength: 19,
+    });
+    expect(Object.values(overspend.targetMark).every(Number.isFinite)).toBe(true);
   });
 });

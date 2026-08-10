@@ -3,13 +3,11 @@ import { Fuel, RefreshCw, Settings } from "lucide-react";
 import {
   formatResetLabel,
   isUsageStale,
-  primaryWindow,
   usageStatusLabel,
   useProviderUsage,
 } from "../hooks/useProviderUsage";
 import {
   isWeeklyUsageWindow,
-  weeklyPaceLabel,
   weeklyQuotaPace,
   type WeeklyQuotaPace,
 } from "../lib/weeklyPacing";
@@ -21,11 +19,9 @@ import type {
 
 const LOW_REMAINING_THRESHOLD = 10;
 
-/** Quota dials lead with the weekly window when the provider reports one. */
+/** Only weekly quota windows receive a primary dial. */
 export function displayWindow(usage: ProviderUsage): ProviderUsageWindow | null {
-  if (usage.windows.length === 0) return null;
-  const weekly = usage.windows.find(isWeeklyUsageWindow);
-  return weekly ?? primaryWindow(usage);
+  return usage.windows.find(isWeeklyUsageWindow) ?? null;
 }
 
 export function remainingPercent(window: ProviderUsageWindow): number {
@@ -45,10 +41,46 @@ export function formatUsageWindowLabel(label: string): string {
   return `${value} ${value === 1 ? unit : `${unit}s`}`;
 }
 
-export function usagePlanLine(usage: ProviderUsage): string {
-  const balance = usage.balance?.trim();
-  const meaningfulBalance = balance && !/^0(?:\.0+)?$/.test(balance) ? balance : null;
-  return [usage.plan, meaningfulBalance].filter(Boolean).join(" · ");
+export function paceDialGeometry(pace: WeeklyQuotaPace): {
+  actualRemaining: number;
+  targetRemaining: number;
+  gapStart: number;
+  gapLength: number;
+  targetMark: {
+    innerX: number;
+    innerY: number;
+    outerX: number;
+    outerY: number;
+    leftX: number;
+    leftY: number;
+    rightX: number;
+    rightY: number;
+  };
+} {
+  const actualRemaining = 100 - pace.actualUsedPercent;
+  const targetRemaining = 100 - pace.targetUsedPercent;
+  const targetAngle = ((targetRemaining / 100) * Math.PI * 2) - (Math.PI / 2);
+  const directionX = Math.cos(targetAngle);
+  const directionY = Math.sin(targetAngle);
+  const tangentX = -directionY;
+  const tangentY = directionX;
+  const targetMark = {
+    innerX: 50 + (directionX * 32),
+    innerY: 50 + (directionY * 32),
+    outerX: 50 + (directionX * 44),
+    outerY: 50 + (directionY * 44),
+    leftX: 50 + (directionX * 38) + (tangentX * 4.5),
+    leftY: 50 + (directionY * 38) + (tangentY * 4.5),
+    rightX: 50 + (directionX * 38) - (tangentX * 4.5),
+    rightY: 50 + (directionY * 38) - (tangentY * 4.5),
+  };
+  return {
+    actualRemaining,
+    targetRemaining,
+    gapStart: Math.min(actualRemaining, targetRemaining),
+    gapLength: Math.abs(actualRemaining - targetRemaining),
+    targetMark,
+  };
 }
 
 function dialAriaSummary(
@@ -64,9 +96,16 @@ function dialAriaSummary(
   ];
   if (preferences.showResetTimes) summary.push(formatResetLabel(window.resetsAt));
   if (preferences.showWeeklyPace && pace) {
+    const targetRemaining = Math.round(100 - pace.targetUsedPercent);
+    const actualRemaining = Math.round(100 - pace.actualUsedPercent);
+    const paceContext = pace.status === "ahead"
+      ? "spending above the weekly target pace"
+      : pace.status === "behind"
+        ? "spending below the weekly target pace"
+        : "spending on the weekly target pace";
     summary.push(
-      `${Math.round(100 - pace.actualUsedPercent)} percent remaining against a ${Math.round(100 - pace.targetUsedPercent)} percent weekly target`,
-      weeklyPaceLabel(pace),
+      `${actualRemaining} percent remaining against a ${targetRemaining} percent weekly target`,
+      paceContext,
     );
   }
   return summary.join(", ");
@@ -86,10 +125,8 @@ function UsageDial({
   const secondaryWindows = preferences.showSecondaryWindows
     ? usage.windows.filter((item) => item !== window).slice(0, 2)
     : [];
-  const planLine = preferences.showPlanDetails ? usagePlanLine(usage) : "";
   const pace = preferences.showWeeklyPace ? weeklyQuotaPace(window) : null;
-  const paceActualRemaining = pace ? 100 - pace.actualUsedPercent : 0;
-  const paceTargetRemaining = pace ? 100 - pace.targetUsedPercent : 0;
+  const paceGeometry = pace ? paceDialGeometry(pace) : null;
 
   return (
     <div
@@ -119,6 +156,24 @@ function UsageDial({
               strokeDasharray={`${remaining} 100`}
             />
           )}
+          {pace && paceGeometry && pace.status !== "on-pace" && paceGeometry.gapLength > 0 && (
+            <circle
+              className={`usage-dial__variance is-${pace.status}`}
+              cx="50"
+              cy="50"
+              r="38"
+              pathLength={100}
+              fill="none"
+              strokeDasharray={`${paceGeometry.gapLength} ${100 - paceGeometry.gapLength}`}
+              strokeDashoffset={-paceGeometry.gapStart}
+            />
+          )}
+          {paceGeometry && (
+            <polygon
+              className="usage-dial__target-mark"
+              points={`${paceGeometry.targetMark.innerX},${paceGeometry.targetMark.innerY} ${paceGeometry.targetMark.leftX},${paceGeometry.targetMark.leftY} ${paceGeometry.targetMark.outerX},${paceGeometry.targetMark.outerY} ${paceGeometry.targetMark.rightX},${paceGeometry.targetMark.rightY}`}
+            />
+          )}
         </svg>
         <div className="usage-dial__reading">
           <strong className="usage-dial__percent">{Math.round(remaining)}%</strong>
@@ -127,33 +182,6 @@ function UsageDial({
 
       {preferences.showResetTimes && (
         <span className="usage-dial__footer">{formatResetLabel(window.resetsAt)}</span>
-      )}
-
-      {planLine && <span className="usage-dial__plan">{planLine}</span>}
-
-      {pace && (
-        <div className={`usage-dial__pace is-${pace.status}`}>
-          <div className="usage-dial__pace-copy">
-            <span aria-label={`Weekly target: ${Math.round(paceTargetRemaining)} percent remaining`}>
-              {Math.round(paceTargetRemaining)}% remaining
-            </span>
-            <strong>{weeklyPaceLabel(pace)}</strong>
-          </div>
-          <span
-            className="usage-dial__pace-track"
-            aria-hidden="true"
-          >
-            <span
-              className="usage-dial__pace-value"
-              style={{ width: `${paceActualRemaining}%` }}
-            />
-            <span
-              className="usage-dial__pace-target"
-              style={{ left: `${Math.min(99, Math.max(1, paceTargetRemaining))}%` }}
-              aria-hidden="true"
-            />
-          </span>
-        </div>
       )}
 
       {secondaryWindows.length > 0 && (

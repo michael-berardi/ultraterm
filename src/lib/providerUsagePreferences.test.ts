@@ -12,7 +12,6 @@ describe("provider usage preferences", () => {
       showWeeklyPace: true,
       showResetTimes: true,
       showSecondaryWindows: true,
-      showPlanDetails: true,
     });
   });
 
@@ -25,7 +24,6 @@ describe("provider usage preferences", () => {
       showWeeklyPace: false,
       showResetTimes: true,
       showSecondaryWindows: false,
-      showPlanDetails: true,
     });
   });
 
