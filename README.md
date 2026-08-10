@@ -1,6 +1,6 @@
 # UltraTerm
 
-UltraTerm is a macOS desktop workspace for running multiple Oh My Pi (OMP) terminals inside one managed window. It combines a Rust/Tauri PTY backend with a React/xterm.js interface, a three-pane matrix layout, persistent tmux-backed sessions, Dictator voice input, PS4 controller navigation, and OLED-focused themes.
+UltraTerm is a macOS desktop workspace for running multiple Oh My Pi (OMP) terminals inside one managed window. It combines a Rust/Tauri PTY backend with a React/xterm.js interface, a three-pane matrix layout, persistent tmux-backed sessions, UltraVox voice input, PS4 controller navigation, and OLED-focused themes.
 
 ## Requirements
 
@@ -111,7 +111,7 @@ npm run release:publish
 ```
 
 `npm run release:package` only stages the `.zip`, `.pkg`, and checksum assets in
-`dist/release/`. Publishing additionally requires an authenticated GitHub CLI.
+`release/`. Publishing additionally requires an authenticated GitHub CLI.
 
 ## Controls
 

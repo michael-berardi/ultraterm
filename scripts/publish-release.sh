@@ -6,7 +6,7 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="${VERSION:-$(node -p "require('${ROOT_DIR}/package.json').version")}"
 TAG="v${VERSION}"
-OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/dist/release}"
+OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/release}"
 
 if ! command -v gh >/dev/null 2>&1; then
   echo "GitHub CLI is required: https://cli.github.com/" >&2

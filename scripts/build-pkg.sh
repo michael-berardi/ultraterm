@@ -6,7 +6,7 @@ PRODUCT_NAME="UltraTerm"
 BUNDLE_ID="com.libertydesignstudio.ultraterm"
 VERSION="${VERSION:-$(node -p "require('${ROOT_DIR}/package.json').version")}"
 ARCH="${PACKAGE_ARCH:-$(uname -m)}"
-OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/dist/installers}"
+OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/release}"
 PKG_PATH="${OUTPUT_DIR}/${PRODUCT_NAME}-${VERSION}-${ARCH}.pkg"
 
 if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
