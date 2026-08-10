@@ -1,8 +1,8 @@
-mod dictator_client;
 mod history;
 mod maintenance;
 mod provider_usage;
 mod telemetry;
+mod ultravox_client;
 
 // UltraTerm Rust backend — single-window Tauri 2 workspace with multiple PTY sessions.
 //
@@ -57,6 +57,7 @@ pub enum LaunchProfile {
     Default,
     GptOnly,
     KimiK3,
+    DeepseekV4Flash,
 }
 
 impl LaunchProfile {
@@ -65,6 +66,7 @@ impl LaunchProfile {
             Self::Default => "lds",
             Self::GptOnly => "gpt-only",
             Self::KimiK3 => "kimi-k3",
+            Self::DeepseekV4Flash => "deepseek-v4-flash",
         }
     }
 }
@@ -1220,34 +1222,34 @@ fn maintenance_report(
 }
 
 #[tauri::command]
-async fn voice_health() -> Result<dictator_client::VoiceServiceResponse, String> {
-    dictator_client::health().await
+async fn voice_health() -> Result<ultravox_client::VoiceServiceResponse, String> {
+    ultravox_client::health().await
 }
 
 #[tauri::command]
-async fn start_voice_input() -> Result<dictator_client::VoiceServiceResponse, String> {
-    dictator_client::start_recording().await
+async fn start_voice_input() -> Result<ultravox_client::VoiceServiceResponse, String> {
+    ultravox_client::start_recording().await
 }
 
 #[tauri::command]
 async fn finish_voice_input(
     recording_id: String,
-) -> Result<dictator_client::VoiceServiceResponse, String> {
-    dictator_client::stop_recording(&recording_id).await
+) -> Result<ultravox_client::VoiceServiceResponse, String> {
+    ultravox_client::stop_recording(&recording_id).await
 }
 
 #[tauri::command]
 async fn voice_input_status(
     recording_id: String,
-) -> Result<dictator_client::VoiceServiceResponse, String> {
-    dictator_client::recording_status(&recording_id).await
+) -> Result<ultravox_client::VoiceServiceResponse, String> {
+    ultravox_client::recording_status(&recording_id).await
 }
 
 #[tauri::command]
 async fn cancel_voice_input(
     recording_id: String,
-) -> Result<dictator_client::VoiceServiceResponse, String> {
-    dictator_client::cancel_recording(&recording_id).await
+) -> Result<ultravox_client::VoiceServiceResponse, String> {
+    ultravox_client::cancel_recording(&recording_id).await
 }
 
 /// Gracefully relaunch UltraTerm. The current process exits normally, so the
@@ -1347,7 +1349,7 @@ pub fn run() {
         .run(|app_handle, event| {
             if let RunEvent::Exit = event {
                 if let Err(error) =
-                    tauri::async_runtime::block_on(dictator_client::cancel_active_recording())
+                    tauri::async_runtime::block_on(ultravox_client::cancel_active_recording())
                 {
                     eprintln!("[ultraterm] voice cleanup failed during exit: {error}");
                 }
@@ -1438,6 +1440,10 @@ mod tests {
             LaunchProfile::KimiK3
         );
         assert_eq!(
+            serde_json::from_str::<LaunchProfile>("\"deepseek-v4-flash\"").unwrap(),
+            LaunchProfile::DeepseekV4Flash
+        );
+        assert_eq!(
             serde_json::to_string(&LaunchProfile::Default).unwrap(),
             "\"default\""
         );
@@ -1449,6 +1455,10 @@ mod tests {
             serde_json::to_string(&LaunchProfile::KimiK3).unwrap(),
             "\"kimi-k3\""
         );
+        assert_eq!(
+            serde_json::to_string(&LaunchProfile::DeepseekV4Flash).unwrap(),
+            "\"deepseek-v4-flash\""
+        );
         assert!(serde_json::from_str::<LaunchProfile>("\"kimi\"").is_err());
         assert!(serde_json::from_str::<LaunchProfile>("\"\"").is_err());
     }
@@ -1458,6 +1468,10 @@ mod tests {
         assert_eq!(LaunchProfile::Default.omp_profile(), "lds");
         assert_eq!(LaunchProfile::GptOnly.omp_profile(), "gpt-only");
         assert_eq!(LaunchProfile::KimiK3.omp_profile(), "kimi-k3");
+        assert_eq!(
+            LaunchProfile::DeepseekV4Flash.omp_profile(),
+            "deepseek-v4-flash"
+        );
     }
 
     #[test]

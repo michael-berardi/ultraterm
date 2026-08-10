@@ -150,6 +150,11 @@ const DEFAULT_TOKEN_TELEMETRY: TokenTelemetry = {
   past7Days: { ...EMPTY_TOKEN_COUNTS },
   allTime: { ...EMPTY_TOKEN_COUNTS },
   today: { ...EMPTY_TOKEN_COUNTS },
+  todayChannels: {
+    subscription: { ...EMPTY_TOKEN_COUNTS },
+    paidApi: { ...EMPTY_TOKEN_COUNTS },
+    paidApiCostUsd: 0,
+  },
   history: [],
   activeSubagents: 0,
   inactiveSubagents: 0,

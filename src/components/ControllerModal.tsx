@@ -99,7 +99,7 @@ export function ControllerModal({
           <div>
             {voiceActive ? <Mic size={15} /> : <MicOff size={15} />}
             <span>
-              <strong>Dictator Voice</strong>
+              <strong>UltraVox Voice</strong>
               <small>{voiceDetail}</small>
             </span>
           </div>

@@ -82,7 +82,7 @@ pub async fn start_recording() -> Result<VoiceServiceResponse, String> {
     let result = match send("start", Some(&recording_id)).await {
         Ok(response) if response.recording_id.as_deref() == Some(&recording_id) => Ok(response),
         Ok(response) => Err(format!(
-            "Dictator started an unexpected recording {}; expected {recording_id}",
+            "UltraVox started an unexpected recording {}; expected {recording_id}",
             response.recording_id.as_deref().unwrap_or("without an id")
         )),
         Err(start_error) => {
@@ -151,7 +151,7 @@ fn socket_path() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             std::env::temp_dir()
-                .join("com.imploselabs.dictator")
+                .join("com.imploselabs.ultravox")
                 .join("voice-v1.sock")
         })
 }
@@ -165,21 +165,21 @@ async fn ensure_service() -> Result<bool, String> {
     }
 
     let status = tokio::process::Command::new("/usr/bin/open")
-        .args(["-a", "Dictator"])
+        .args(["-a", "UltraVox"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .await
-        .map_err(|e| format!("could not launch Dictator: {e}"))?;
+        .map_err(|e| format!("could not launch UltraVox: {e}"))?;
     if !status.success() {
         return Err(format!(
-            "could not launch Dictator: /usr/bin/open exited with {status}"
+            "could not launch UltraVox: /usr/bin/open exited with {status}"
         ));
     }
 
     let deadline = Instant::now() + SERVICE_READY_TIMEOUT;
-    let mut last_error = "Dictator voice service did not become ready".to_string();
+    let mut last_error = "UltraVox voice service did not become ready".to_string();
     while Instant::now() < deadline {
         sleep(Duration::from_millis(200)).await;
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -191,7 +191,7 @@ async fn ensure_service() -> Result<bool, String> {
             Err(error) => last_error = error,
         }
     }
-    Err(format!("Dictator voice service unavailable: {last_error}"))
+    Err(format!("UltraVox voice service unavailable: {last_error}"))
 }
 
 async fn recover_status(
@@ -211,7 +211,7 @@ async fn recover_status(
         sleep(Duration::from_millis(200)).await;
     }
     Err(format!(
-        "{original_error}; Dictator did not confirm recording {recording_id}"
+        "{original_error}; UltraVox did not confirm recording {recording_id}"
     ))
 }
 
@@ -249,15 +249,15 @@ async fn send_with_timeout(
         read_frame(&mut stream).await
     })
     .await
-    .map_err(|_| format!("timed out waiting for Dictator voice service during {command}"))?
+    .map_err(|_| format!("timed out waiting for UltraVox voice service during {command}"))?
     .map_err(|e: io::Error| e.to_string())?;
 
     if response.request_id != request_id {
-        return Err("Dictator voice service returned a mismatched request id".to_string());
+        return Err("UltraVox voice service returned a mismatched request id".to_string());
     }
     if response.version != PROTOCOL_VERSION {
         return Err(format!(
-            "Dictator voice protocol version mismatch: expected {PROTOCOL_VERSION}, received {}",
+            "UltraVox voice protocol version mismatch: expected {PROTOCOL_VERSION}, received {}",
             response.version
         ));
     }
@@ -266,7 +266,7 @@ async fn send_with_timeout(
     } else {
         Err(response
             .error
-            .unwrap_or_else(|| "Dictator voice request failed".to_string()))
+            .unwrap_or_else(|| "UltraVox voice request failed".to_string()))
     }
 }
 
@@ -276,7 +276,7 @@ async fn write_frame(stream: &mut UnixStream, value: &serde_json::Value) -> io::
     if payload.len() > MAX_FRAME_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "Dictator voice request exceeded frame limit",
+            "UltraVox voice request exceeded frame limit",
         ));
     }
     stream.write_u32(payload.len() as u32).await?;
@@ -289,7 +289,7 @@ async fn read_frame<T: for<'de> Deserialize<'de>>(stream: &mut UnixStream) -> io
     if length == 0 || length > MAX_FRAME_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("invalid Dictator voice response length: {length}"),
+            format!("invalid UltraVox voice response length: {length}"),
         ));
     }
     let mut payload = vec![0_u8; length];

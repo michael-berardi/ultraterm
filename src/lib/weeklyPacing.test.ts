@@ -37,9 +37,9 @@ describe("weekly quota pacing", () => {
     expect(ahead?.status).toBe("ahead");
     expect(onPace?.status).toBe("on-pace");
     expect(behind?.status).toBe("behind");
-    expect(weeklyPaceLabel(ahead!)).toMatch(/pts ahead$/);
+    expect(weeklyPaceLabel(ahead!)).toMatch(/percent ahead$/);
     expect(weeklyPaceLabel(onPace!)).toBe("On pace");
-    expect(weeklyPaceLabel({ ...ahead!, deltaPoints: 1.2 })).toBe("1 pt ahead");
+    expect(weeklyPaceLabel({ ...ahead!, deltaPercent: 1.2 })).toBe("1 percent ahead");
   });
 
   it("returns no pace without a weekly reset anchor", () => {

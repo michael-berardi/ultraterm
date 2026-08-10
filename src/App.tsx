@@ -787,7 +787,7 @@ function App(): ReactElement {
     }
 
     if (lastError) throw lastError;
-    throw new Error("Dictator transcription timed out.");
+    throw new Error("UltraVox transcription timed out.");
   }, []);
 
   const advanceVoice = useCallback(async (activationSource?: VoiceActivationSource) => {
@@ -819,13 +819,13 @@ function App(): ReactElement {
         const response = await withTimeout(
           startVoiceInput(),
           15_000,
-          "UltraTerm could not connect to Dictator.",
+          "UltraTerm could not connect to UltraVox.",
           (lateResponse) => {
             if (lateResponse.recordingId) void cancelVoiceInput(lateResponse.recordingId);
           },
         );
         const recordingId = response.recordingId;
-        if (!recordingId) throw new Error("Dictator did not return a recording id.");
+        if (!recordingId) throw new Error("UltraVox did not return a recording id.");
         if (voiceOperation.current !== operation) {
           await cancelVoiceInput(recordingId);
           return;
@@ -1070,14 +1070,14 @@ function App(): ReactElement {
     );
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      const isDictatorShortcut = (
+      const isUltraVoxShortcut = (
         event.code === "Backquote"
         && event.altKey
         && !event.metaKey
         && !event.ctrlKey
         && !event.shiftKey
       );
-      if (isDictatorShortcut) {
+      if (isUltraVoxShortcut) {
         event.preventDefault();
         event.stopImmediatePropagation();
         if (event.repeat) return;

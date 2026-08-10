@@ -93,6 +93,16 @@ function controllerVoiceMessage(state: VoiceInputState): string {
 
 const COUNT_UP_DURATION_MS = 620;
 
+function formatUsd(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "$0.00";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: value < 0.01 ? 4 : 2,
+    maximumFractionDigits: value < 0.01 ? 4 : 2,
+  }).format(value);
+}
+
 /**
  * Exact, locale-formatted token count that interpolates toward new values.
  * Interpolation is skipped entirely under reduced motion.
@@ -504,8 +514,27 @@ export function WorkspaceRail({
             </div>
 
             <div className="token-today">
-              <span className="token-today__label">Today</span>
+              <span className="token-today__label">Total today</span>
               <CountUpTokens value={telemetry.today.total} />
+              <div className="token-channel-list" aria-label="Today's token channels">
+                <div className="token-channel-row">
+                  <span>Subscription</span>
+                  <strong title={`${telemetry.todayChannels.subscription.total.toLocaleString()} subscription tokens today`}>
+                    {telemetry.todayChannels.subscription.total.toLocaleString()}
+                  </strong>
+                </div>
+                <div className="token-channel-row">
+                  <span>Paid API</span>
+                  <span className="token-channel-row__value">
+                    <strong title={`${telemetry.todayChannels.paidApi.total.toLocaleString()} paid API tokens today`}>
+                      {telemetry.todayChannels.paidApi.total.toLocaleString()}
+                    </strong>
+                    <small title="Estimated from the model rates in OMP">
+                      {formatUsd(telemetry.todayChannels.paidApiCostUsd)} today
+                    </small>
+                  </span>
+                </div>
+              </div>
               <button
                 type="button"
                 className="token-today__history"

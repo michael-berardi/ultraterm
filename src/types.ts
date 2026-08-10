@@ -31,7 +31,7 @@ export const DEFAULT_PROVIDER_USAGE_PREFERENCES: Readonly<ProviderUsagePreferenc
 export type SessionStatus = "connecting" | "live" | "exited" | "error";
 export type SessionActivity = "idle" | "working";
 
-export type LaunchProfileId = "default" | "gpt-only" | "kimi-k3";
+export type LaunchProfileId = "default" | "gpt-only" | "kimi-k3" | "deepseek-v4-flash";
 
 export interface LaunchProfileOption {
   id: LaunchProfileId;
@@ -43,10 +43,18 @@ export const LAUNCH_PROFILE_OPTIONS: ReadonlyArray<LaunchProfileOption> = [
   { id: "default", label: "Default", description: "Launch the mixed Kimi, Sol, and Luna OMP profile" },
   { id: "gpt-only", label: "GPT only", description: "Launch with the gpt-only OMP profile" },
   { id: "kimi-k3", label: "Kimi K3", description: "Launch with the kimi-k3 OMP profile" },
+  {
+    id: "deepseek-v4-flash",
+    label: "DeepSeek V4 Flash",
+    description: "Launch an all-DeepSeek V4 Flash OMP profile",
+  },
 ];
 
 export function isLaunchProfileId(value: unknown): value is LaunchProfileId {
-  return value === "default" || value === "gpt-only" || value === "kimi-k3";
+  return value === "default"
+    || value === "gpt-only"
+    || value === "kimi-k3"
+    || value === "deepseek-v4-flash";
 }
 
 export function launchProfileLabel(profile: LaunchProfileId | null | undefined): string {
@@ -106,6 +114,12 @@ export interface TokenCounts {
   total: number;
 }
 
+export interface TokenChannelTelemetry {
+  subscription: TokenCounts;
+  paidApi: TokenCounts;
+  paidApiCostUsd: number;
+}
+
 export interface TerminalTokenTelemetry {
   slot: number;
   sessionId: string | null;
@@ -131,6 +145,7 @@ export interface TokenTelemetry {
   terminals: TerminalTokenTelemetry[];
   /** Exact tokens for the current local calendar day. */
   today: TokenCounts;
+  todayChannels: TokenChannelTelemetry;
   history: TokenHistoryDay[];
   past24Hours: TokenCounts;
   past7Days: TokenCounts;

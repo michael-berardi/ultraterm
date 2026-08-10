@@ -65,7 +65,7 @@ function dialAriaSummary(
   if (preferences.showResetTimes) summary.push(formatResetLabel(window.resetsAt));
   if (preferences.showWeeklyPace && pace) {
     summary.push(
-      `${Math.round(pace.actualUsedPercent)} percent used against a ${Math.round(pace.targetUsedPercent)} percent weekly target`,
+      `${Math.round(100 - pace.actualUsedPercent)} percent remaining against a ${Math.round(100 - pace.targetUsedPercent)} percent weekly target`,
       weeklyPaceLabel(pace),
     );
   }
@@ -88,6 +88,8 @@ function UsageDial({
     : [];
   const planLine = preferences.showPlanDetails ? usagePlanLine(usage) : "";
   const pace = preferences.showWeeklyPace ? weeklyQuotaPace(window) : null;
+  const paceActualRemaining = pace ? 100 - pace.actualUsedPercent : 0;
+  const paceTargetRemaining = pace ? 100 - pace.targetUsedPercent : 0;
 
   return (
     <div
@@ -132,7 +134,9 @@ function UsageDial({
       {pace && (
         <div className={`usage-dial__pace is-${pace.status}`}>
           <div className="usage-dial__pace-copy">
-            <span>Target {Math.round(pace.targetUsedPercent)}% used</span>
+            <span aria-label={`Weekly target: ${Math.round(paceTargetRemaining)} percent remaining`}>
+              {Math.round(paceTargetRemaining)}% remaining
+            </span>
             <strong>{weeklyPaceLabel(pace)}</strong>
           </div>
           <span
@@ -141,11 +145,11 @@ function UsageDial({
           >
             <span
               className="usage-dial__pace-value"
-              style={{ width: `${pace.actualUsedPercent}%` }}
+              style={{ width: `${paceActualRemaining}%` }}
             />
             <span
               className="usage-dial__pace-target"
-              style={{ left: `${Math.min(99, Math.max(1, pace.targetUsedPercent))}%` }}
+              style={{ left: `${Math.min(99, Math.max(1, paceTargetRemaining))}%` }}
               aria-hidden="true"
             />
           </span>

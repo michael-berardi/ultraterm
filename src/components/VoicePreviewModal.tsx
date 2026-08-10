@@ -116,7 +116,7 @@ export function VoicePreviewModal({
 
   const isBusy = state === "connecting" || (state === "transcribing" && !error);
   const title = state === "connecting"
-    ? "Connecting to Dictator"
+    ? "Connecting to UltraVox"
     : state === "recording"
       ? "Listening"
       : state === "transcribing"
@@ -219,7 +219,7 @@ export function VoicePreviewModal({
           )}
 
           <p id="voice-modal-detail" className="voice-modal__detail" role="status" aria-live="polite" aria-atomic="true">
-            {state === "connecting" && "Starting the installed Dictator app and its private local voice service."}
+            {state === "connecting" && "Starting the installed UltraVox app and its private local voice service."}
             {state === "recording" && (
               activationSource === "keyboard"
                 ? "Speak naturally. The live waveform follows your microphone; press Enter to stop and transcribe."
@@ -227,8 +227,8 @@ export function VoicePreviewModal({
             )}
             {state === "transcribing" && (
               error
-                ? "Dictator status was interrupted. Retry the status check or cancel this recording."
-                : "Audio stays on this Mac while Dictator prepares an editable transcript."
+                ? "UltraVox status was interrupted. Retry the status check or cancel this recording."
+                : "Audio stays on this Mac while UltraVox prepares an editable transcript."
             )}
             {state === "preview" && (
               activationSource === "keyboard"

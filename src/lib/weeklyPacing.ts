@@ -8,7 +8,7 @@ export type WeeklyPaceStatus = "ahead" | "on-pace" | "behind";
 export interface WeeklyQuotaPace {
   actualUsedPercent: number;
   targetUsedPercent: number;
-  deltaPoints: number;
+  deltaPercent: number;
   status: WeeklyPaceStatus;
 }
 
@@ -37,18 +37,18 @@ export function weeklyQuotaPace(
     ((WEEK_MILLISECONDS - (resetAt - now)) / WEEK_MILLISECONDS) * 100,
   );
   const actualUsedPercent = clampPercent(window.usedPercent);
-  const deltaPoints = actualUsedPercent - targetUsedPercent;
-  const status = Math.abs(deltaPoints) < ON_PACE_TOLERANCE_POINTS
+  const deltaPercent = actualUsedPercent - targetUsedPercent;
+  const status = Math.abs(deltaPercent) < ON_PACE_TOLERANCE_POINTS
     ? "on-pace"
-    : deltaPoints > 0
+    : deltaPercent > 0
       ? "ahead"
       : "behind";
 
-  return { actualUsedPercent, targetUsedPercent, deltaPoints, status };
+  return { actualUsedPercent, targetUsedPercent, deltaPercent, status };
 }
 
 export function weeklyPaceLabel(pace: WeeklyQuotaPace): string {
   if (pace.status === "on-pace") return "On pace";
-  const points = Math.max(1, Math.round(Math.abs(pace.deltaPoints)));
-  return `${points} ${points === 1 ? "pt" : "pts"} ${pace.status}`;
+  const percent = Math.max(1, Math.round(Math.abs(pace.deltaPercent)));
+  return `${percent} percent ${pace.status}`;
 }

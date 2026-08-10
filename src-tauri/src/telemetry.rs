@@ -7,7 +7,7 @@ use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Local, NaiveDate, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OpenFlags};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -36,6 +36,32 @@ impl TokenCounts {
         self.cache_read = self.cache_read.saturating_add(other.cache_read);
         self.cache_write = self.cache_write.saturating_add(other.cache_write);
         self.total = self.total.saturating_add(other.total);
+    }
+}
+
+#[derive(Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenChannelTelemetry {
+    pub subscription: TokenCounts,
+    pub paid_api: TokenCounts,
+    pub paid_api_cost_usd: f64,
+}
+
+#[derive(Clone, Copy, Default)]
+struct ModelPrice {
+    input: f64,
+    output: f64,
+    cache_read: f64,
+    cache_write: f64,
+}
+
+impl ModelPrice {
+    fn cost(self, counts: &TokenCounts) -> f64 {
+        (counts.input as f64 * self.input
+            + counts.output as f64 * self.output
+            + counts.cache_read as f64 * self.cache_read
+            + counts.cache_write as f64 * self.cache_write)
+            / 1_000_000.0
     }
 }
 
@@ -74,6 +100,7 @@ pub struct TokenTelemetry {
     pub past_24_hours: TokenCounts,
     pub past_7_days: TokenCounts,
     pub all_time: TokenCounts,
+    pub today_channels: TokenChannelTelemetry,
     pub active_subagents: usize,
     pub inactive_subagents: usize,
     pub parallel_agents: usize,
@@ -85,6 +112,7 @@ pub struct TokenTelemetry {
 struct TimedUsage {
     timestamp: i64,
     model: Option<String>,
+    provider: Option<String>,
     counts: TokenCounts,
 }
 
@@ -102,6 +130,7 @@ struct AggregatedUsage {
     past_7_days: TokenCounts,
     all_time: TokenCounts,
     today: TokenCounts,
+    today_channels: TokenChannelTelemetry,
     history: Vec<TokenHistoryDay>,
 }
 
@@ -110,7 +139,77 @@ fn local_date(timestamp: i64) -> Option<NaiveDate> {
         .map(|timestamp| timestamp.with_timezone(&Local).date_naive())
 }
 
-fn aggregate_usage<'a>(usages: impl Iterator<Item = &'a FileUsage>, now: i64) -> AggregatedUsage {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TokenChannel {
+    Subscription,
+    PaidApi,
+}
+
+fn token_channel(provider: Option<&str>, model: Option<&str>) -> TokenChannel {
+    let provider = provider.unwrap_or_default().to_ascii_lowercase();
+    let model = model.unwrap_or_default().to_ascii_lowercase();
+    if model.ends_with(":free") {
+        return TokenChannel::Subscription;
+    }
+    let model_provider = model.split_once('/').map(|(prefix, _)| prefix);
+    let is_paid_provider = |candidate: &str| {
+        matches!(
+            candidate,
+            "openrouter"
+                | "openai"
+                | "deepseek"
+                | "moonshot"
+                | "cerebras"
+                | "google"
+                | "groq"
+                | "nvidia"
+                | "together"
+                | "fireworks"
+                | "xai"
+                | "zenmux"
+        )
+    };
+    if is_paid_provider(&provider)
+        || model_provider.is_some_and(is_paid_provider)
+        || model.contains("deepseek")
+    {
+        TokenChannel::PaidApi
+    } else {
+        TokenChannel::Subscription
+    }
+}
+
+fn model_price<'a>(
+    pricing: &'a HashMap<String, ModelPrice>,
+    model: Option<&str>,
+) -> Option<&'a ModelPrice> {
+    let model = model?.trim_start_matches('~');
+    pricing
+        .get(model)
+        .or_else(|| model.rsplit('/').next().and_then(|name| pricing.get(name)))
+}
+
+fn add_channel_usage(
+    channels: &mut TokenChannelTelemetry,
+    record: &TimedUsage,
+    pricing: &HashMap<String, ModelPrice>,
+) {
+    match token_channel(record.provider.as_deref(), record.model.as_deref()) {
+        TokenChannel::Subscription => channels.subscription.add(&record.counts),
+        TokenChannel::PaidApi => {
+            channels.paid_api.add(&record.counts);
+            if let Some(price) = model_price(pricing, record.model.as_deref()) {
+                channels.paid_api_cost_usd += price.cost(&record.counts);
+            }
+        }
+    }
+}
+
+fn aggregate_usage<'a>(
+    usages: impl Iterator<Item = &'a FileUsage>,
+    pricing: &HashMap<String, ModelPrice>,
+    now: i64,
+) -> AggregatedUsage {
     let past_24_hour_boundary = now.saturating_sub(SECONDS_PER_DAY);
     let past_7_day_boundary = now.saturating_sub(7 * SECONDS_PER_DAY);
     let today_date = local_date(now);
@@ -118,6 +217,7 @@ fn aggregate_usage<'a>(usages: impl Iterator<Item = &'a FileUsage>, now: i64) ->
     let mut past_7_days = TokenCounts::default();
     let mut all_time = TokenCounts::default();
     let mut today = TokenCounts::default();
+    let mut today_channels = TokenChannelTelemetry::default();
     let mut days: BTreeMap<NaiveDate, (TokenCounts, BTreeMap<String, TokenCounts>)> =
         BTreeMap::new();
 
@@ -135,6 +235,7 @@ fn aggregate_usage<'a>(usages: impl Iterator<Item = &'a FileUsage>, now: i64) ->
             };
             if Some(date) == today_date {
                 today.add(&record.counts);
+                add_channel_usage(&mut today_channels, record, pricing);
             }
             let (day_usage, models) = days.entry(date).or_default();
             day_usage.add(&record.counts);
@@ -167,6 +268,7 @@ fn aggregate_usage<'a>(usages: impl Iterator<Item = &'a FileUsage>, now: i64) ->
         past_7_days,
         all_time,
         today,
+        today_channels,
         history,
     }
 }
@@ -182,6 +284,8 @@ pub struct TokenTelemetryManager {
     registered_sessions: HashSet<PathBuf>,
     registry_loaded: bool,
     index_loaded: bool,
+    pricing: HashMap<String, ModelPrice>,
+    pricing_modified: Option<SystemTime>,
     snapshot: Option<(Instant, TokenTelemetry)>,
 }
 
@@ -192,6 +296,8 @@ impl Default for TokenTelemetryManager {
             registered_sessions: HashSet::new(),
             registry_loaded: false,
             index_loaded: false,
+            pricing: HashMap::new(),
+            pricing_modified: None,
             snapshot: None,
         }
     }
@@ -225,12 +331,17 @@ impl TokenTelemetryManager {
             collect_session_files(session_path, &mut files);
         }
         self.refresh_files(home, &files)?;
+        self.refresh_model_pricing(home);
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
-        let aggregate = aggregate_usage(self.file_cache.values().map(|cached| &cached.usage), now);
+        let aggregate = aggregate_usage(
+            self.file_cache.values().map(|cached| &cached.usage),
+            &self.pricing,
+            now,
+        );
 
         let mut terminals = Vec::with_capacity(crate::MAX_SESSION_SLOT as usize);
         let mut active_agent_paths = HashSet::new();
@@ -282,6 +393,7 @@ impl TokenTelemetryManager {
         let snapshot = TokenTelemetry {
             terminals,
             today: aggregate.today,
+            today_channels: aggregate.today_channels,
             history: aggregate.history,
             past_24_hours: aggregate.past_24_hours,
             past_7_days: aggregate.past_7_days,
@@ -388,6 +500,125 @@ impl TokenTelemetryManager {
         self.file_cache.extend(changed);
         Ok(())
     }
+
+    fn refresh_model_pricing(&mut self, home: &Path) {
+        let path = home.join(".omp").join("agent").join("models.db");
+        let modified = fs::metadata(&path)
+            .and_then(|metadata| metadata.modified())
+            .ok();
+        if modified.is_some() && modified == self.pricing_modified {
+            return;
+        }
+        if let Ok(pricing) = load_model_pricing(&path) {
+            self.pricing = pricing;
+            self.pricing_modified = modified;
+        }
+    }
+}
+
+fn fallback_model_pricing() -> HashMap<String, ModelPrice> {
+    [
+        (
+            "deepseek/deepseek-v4-flash",
+            ModelPrice {
+                input: 0.14,
+                output: 0.28,
+                cache_read: 0.028,
+                cache_write: 0.0,
+            },
+        ),
+        (
+            "deepseek/deepseek-v4-flash-0731",
+            ModelPrice {
+                input: 0.09,
+                output: 0.18,
+                cache_read: 0.018,
+                cache_write: 0.0,
+            },
+        ),
+        (
+            "deepseek/deepseek-v4-pro",
+            ModelPrice {
+                input: 0.435,
+                output: 0.87,
+                cache_read: 0.003625,
+                cache_write: 0.0,
+            },
+        ),
+    ]
+    .into_iter()
+    .flat_map(|(model, price)| {
+        let short = model.rsplit('/').next().unwrap_or(model).to_string();
+        [(model.to_string(), price), (short, price)]
+    })
+    .collect()
+}
+
+fn load_model_pricing(path: &Path) -> Result<HashMap<String, ModelPrice>, String> {
+    let mut pricing = fallback_model_pricing();
+    if !path.is_file() {
+        return Ok(pricing);
+    }
+    let connection =
+        Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|error| {
+            format!(
+                "Failed to read OMP model pricing {}: {error}",
+                path.display()
+            )
+        })?;
+    let mut statement = connection
+        .prepare("SELECT models FROM model_cache")
+        .map_err(|error| {
+            format!(
+                "Failed to query OMP model pricing {}: {error}",
+                path.display()
+            )
+        })?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| {
+            format!(
+                "Failed to load OMP model pricing {}: {error}",
+                path.display()
+            )
+        })?;
+    for row in rows.flatten() {
+        let Ok(Value::Array(models)) = serde_json::from_str::<Value>(&row) else {
+            continue;
+        };
+        for model in models {
+            let Some(id) = model.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(cost) = model.get("cost") else {
+                continue;
+            };
+            let price = ModelPrice {
+                input: cost
+                    .get("input")
+                    .and_then(Value::as_f64)
+                    .unwrap_or_default(),
+                output: cost
+                    .get("output")
+                    .and_then(Value::as_f64)
+                    .unwrap_or_default(),
+                cache_read: cost
+                    .get("cacheRead")
+                    .and_then(Value::as_f64)
+                    .unwrap_or_default(),
+                cache_write: cost
+                    .get("cacheWrite")
+                    .and_then(Value::as_f64)
+                    .unwrap_or_default(),
+            };
+            let id = id.trim_start_matches('~').to_string();
+            pricing.insert(id.clone(), price);
+            if let Some(short) = id.rsplit('/').next() {
+                pricing.insert(short.to_string(), price);
+            }
+        }
+    }
+    Ok(pricing)
 }
 
 fn telemetry_index_path(home: &Path) -> PathBuf {
@@ -431,6 +662,7 @@ fn open_telemetry_index(home: &Path) -> Result<Connection, String> {
                  record_index INTEGER NOT NULL,
                  timestamp INTEGER NOT NULL,
                  model TEXT,
+                 provider TEXT,
                  input INTEGER NOT NULL,
                  output INTEGER NOT NULL,
                  cache_read INTEGER NOT NULL,
@@ -440,12 +672,45 @@ fn open_telemetry_index(home: &Path) -> Result<Connection, String> {
                  FOREIGN KEY (file_path) REFERENCES telemetry_files(path) ON DELETE CASCADE
              );
              CREATE INDEX IF NOT EXISTS telemetry_records_timestamp
-                 ON telemetry_records(timestamp);
-             PRAGMA user_version = 1;",
+                 ON telemetry_records(timestamp);",
         )
         .map_err(|error| {
             format!(
                 "Failed to initialize token telemetry index {}: {error}",
+                path.display()
+            )
+        })?;
+    let has_provider = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('telemetry_records') WHERE name = 'provider'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| {
+            format!(
+                "Failed to inspect token telemetry index {}: {error}",
+                path.display()
+            )
+        })?
+        > 0;
+    if !has_provider {
+        connection
+            .execute_batch(
+                "ALTER TABLE telemetry_records ADD COLUMN provider TEXT;
+                 UPDATE telemetry_files SET modified_ns = NULL;",
+            )
+            .map_err(|error| {
+                format!(
+                    "Failed to migrate token telemetry index {}: {error}",
+                    path.display()
+                )
+            })?;
+    }
+    connection
+        .pragma_update(None, "user_version", 2_i64)
+        .map_err(|error| {
+            format!(
+                "Failed to version token telemetry index {}: {error}",
                 path.display()
             )
         })?;
@@ -539,8 +804,8 @@ fn load_file_usage_index(home: &Path) -> Result<HashMap<PathBuf, CachedFileUsage
     {
         let mut statement = connection
             .prepare(
-                "SELECT file_path, timestamp, model, input, output, cache_read,
-                        cache_write, total
+                "SELECT file_path, timestamp, model, provider, input, output,
+                        cache_read, cache_write, total
                  FROM telemetry_records
                  ORDER BY file_path, record_index",
             )
@@ -558,12 +823,13 @@ fn load_file_usage_index(home: &Path) -> Result<HashMap<PathBuf, CachedFileUsage
                     TimedUsage {
                         timestamp: row.get(1)?,
                         model: row.get(2)?,
+                        provider: row.get(3)?,
                         counts: TokenCounts {
-                            input: stored_u64(row.get(3)?),
-                            output: stored_u64(row.get(4)?),
-                            cache_read: stored_u64(row.get(5)?),
-                            cache_write: stored_u64(row.get(6)?),
-                            total: stored_u64(row.get(7)?),
+                            input: stored_u64(row.get(4)?),
+                            output: stored_u64(row.get(5)?),
+                            cache_read: stored_u64(row.get(6)?),
+                            cache_write: stored_u64(row.get(7)?),
+                            total: stored_u64(row.get(8)?),
                         },
                     },
                 ))
@@ -639,9 +905,9 @@ fn persist_file_usage_index(
         let mut insert_record = transaction
             .prepare(
                 "INSERT INTO telemetry_records (
-                     file_path, record_index, timestamp, model, input, output,
+                     file_path, record_index, timestamp, model, provider, input, output,
                      cache_read, cache_write, total
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             )
             .map_err(|error| {
                 format!(
@@ -687,6 +953,7 @@ fn persist_file_usage_index(
                         i64::try_from(record_index).unwrap_or(i64::MAX),
                         record.timestamp,
                         record.model.as_deref(),
+                        record.provider.as_deref(),
                         sqlite_i64(record.counts.input),
                         sqlite_i64(record.counts.output),
                         sqlite_i64(record.counts.cache_read),
@@ -833,6 +1100,11 @@ fn parse_usage_file(path: &Path) -> Result<FileUsage, String> {
             continue;
         };
         let record_model = usage.model.clone();
+        let record_provider = message
+            .get("provider")
+            .and_then(Value::as_str)
+            .or_else(|| value.get("provider").and_then(Value::as_str))
+            .map(str::to_string);
         let input = number(raw_usage, "input");
         let output = number(raw_usage, "output");
         let cache_read = number(raw_usage, "cacheRead");
@@ -854,6 +1126,7 @@ fn parse_usage_file(path: &Path) -> Result<FileUsage, String> {
             usage.timed.push(TimedUsage {
                 timestamp,
                 model: record_model,
+                provider: record_provider,
                 counts,
             });
         }
@@ -1085,22 +1358,25 @@ mod tests {
             TimedUsage {
                 timestamp: previous_evening,
                 model: Some("gpt".to_string()),
+                provider: None,
                 counts: counts(2),
             },
             TimedUsage {
                 timestamp: today_morning,
                 model: Some("kimi".to_string()),
+                provider: None,
                 counts: counts(1),
             },
             TimedUsage {
                 timestamp: old,
                 model: Some("gpt".to_string()),
+                provider: None,
                 counts: counts(4),
             },
         ];
         usage.total = counts(7);
 
-        let aggregate = aggregate_usage(std::iter::once(&usage), now);
+        let aggregate = aggregate_usage(std::iter::once(&usage), &HashMap::new(), now);
 
         assert_eq!(aggregate.today.total, 1);
         assert_eq!(aggregate.past_24_hours.total, 3);
@@ -1129,22 +1405,25 @@ mod tests {
             TimedUsage {
                 timestamp: second_day,
                 model: Some("gpt".to_string()),
+                provider: None,
                 counts: counts(3),
             },
             TimedUsage {
                 timestamp: first_day,
                 model: Some("kimi".to_string()),
+                provider: None,
                 counts: counts(2),
             },
             TimedUsage {
                 timestamp: second_day + 60,
                 model: Some("kimi".to_string()),
+                provider: None,
                 counts: counts(5),
             },
         ];
         usage.total = counts(10);
 
-        let history = aggregate_usage(std::iter::once(&usage), second_day).history;
+        let history = aggregate_usage(std::iter::once(&usage), &HashMap::new(), second_day).history;
 
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].date, "2026-07-17");
@@ -1201,7 +1480,11 @@ mod tests {
         manager.load_index(home).unwrap();
         manager.refresh_files(home, &files).unwrap();
         let now = timestamp_seconds(Some("2026-07-18T13:00:00Z")).unwrap();
-        let before = aggregate_usage(manager.file_cache.values().map(|cached| &cached.usage), now);
+        let before = aggregate_usage(
+            manager.file_cache.values().map(|cached| &cached.usage),
+            &HashMap::new(),
+            now,
+        );
         drop(manager);
         fs::remove_file(&transcript).unwrap();
 
@@ -1209,6 +1492,7 @@ mod tests {
         reloaded.load_index(home).unwrap();
         let after = aggregate_usage(
             reloaded.file_cache.values().map(|cached| &cached.usage),
+            &HashMap::new(),
             now,
         );
 
@@ -1222,6 +1506,81 @@ mod tests {
             before.history[0].models[0].usage.total
         );
         assert_eq!(after.history[0].models[0].model, "gpt");
+    }
+
+    #[test]
+    fn legacy_records_infer_paid_api_from_model_namespace() {
+        assert!(matches!(
+            token_channel(None, Some("openai/gpt-5.1")),
+            TokenChannel::PaidApi
+        ));
+        assert!(matches!(
+            token_channel(None, Some("kimi-code/k3-256k")),
+            TokenChannel::Subscription
+        ));
+        assert!(matches!(
+            token_channel(Some("openai-codex"), Some("openai-codex/gpt-5.6-sol")),
+            TokenChannel::Subscription
+        ));
+    }
+
+    #[test]
+    fn today_channels_split_subscription_and_paid_api_with_cost() {
+        let now = Local
+            .with_ymd_and_hms(2026, 8, 9, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp();
+        let mut usage = FileUsage::default();
+        usage.timed = vec![
+            TimedUsage {
+                timestamp: now,
+                model: Some("gpt-5.6-sol".to_string()),
+                provider: Some("openai-codex".to_string()),
+                counts: TokenCounts {
+                    input: 10,
+                    output: 5,
+                    total: 15,
+                    ..TokenCounts::default()
+                },
+            },
+            TimedUsage {
+                timestamp: now,
+                model: Some("deepseek/deepseek-v4-flash".to_string()),
+                provider: Some("openrouter".to_string()),
+                counts: TokenCounts {
+                    input: 1_000_000,
+                    output: 500_000,
+                    cache_read: 250_000,
+                    total: 1_500_000,
+                    ..TokenCounts::default()
+                },
+            },
+        ];
+        usage.total = TokenCounts {
+            input: 1_000_010,
+            output: 500_005,
+            cache_read: 250_000,
+            total: 1_500_015,
+            ..TokenCounts::default()
+        };
+        let mut pricing = HashMap::new();
+        pricing.insert(
+            "deepseek/deepseek-v4-flash".to_string(),
+            ModelPrice {
+                input: 0.14,
+                output: 0.28,
+                cache_read: 0.028,
+                cache_write: 0.0,
+            },
+        );
+
+        let aggregate = aggregate_usage(std::iter::once(&usage), &pricing, now);
+
+        assert_eq!(aggregate.today.total, 1_500_015);
+        assert_eq!(aggregate.today_channels.subscription.total, 15);
+        assert_eq!(aggregate.today_channels.paid_api.total, 1_500_000);
+        assert!((aggregate.today_channels.paid_api_cost_usd - 0.287).abs() < 0.000_001);
     }
 
     #[test]
