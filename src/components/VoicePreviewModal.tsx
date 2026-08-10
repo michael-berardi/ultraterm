@@ -145,7 +145,7 @@ export function VoicePreviewModal({
             {state === "preview" ? <Sparkles size={18} /> : <Mic size={18} />}
           </div>
           <div>
-            <p className="eyebrow">DICTATOR VOICE · {terminalLabel.toUpperCase()}</p>
+            <p className="eyebrow">ULTRAVOX VOICE · {terminalLabel.toUpperCase()}</p>
             <h2 id="voice-modal-title">{title}</h2>
           </div>
           <button ref={closeButtonRef} type="button" className="voice-modal__close" onClick={onCancel} aria-label="Cancel voice input">
