@@ -291,7 +291,9 @@ function App(): ReactElement {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [theme, setTheme] = useState<ThemeId>(() => {
     const stored = localStorage.getItem("ultraterm.theme");
-    return stored === "aurora" || stored === "titanium" || stored === "ember" ? stored : "oled";
+    return stored === "white" || stored === "aurora" || stored === "titanium" || stored === "ember"
+      ? stored
+      : "oled";
   });
   const [effectMode, setEffectMode] = useState<EffectMode>(() => {
     const stored = localStorage.getItem(EFFECT_MODE_STORAGE_KEY);
@@ -534,6 +536,11 @@ function App(): ReactElement {
   }, [effectMode]);
 
   useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute(
+      "content",
+      theme === "white" ? "#ffffff" : "#070a0d",
+    );
     localStorage.setItem("ultraterm.theme", theme);
   }, [theme]);
 
@@ -1266,6 +1273,7 @@ function App(): ReactElement {
               session={session}
               scrollback={TERMINAL_SCROLLBACK}
               preferences={terminalPreferences}
+              theme={theme}
               active={session.id === activeId}
               maximized={session.id === layoutMaximizedId}
               exiting={exitingIds.has(session.id)}
@@ -1305,6 +1313,7 @@ function App(): ReactElement {
       </main>
       {voice.state !== "idle" && (
         <VoicePreviewModal
+          theme={theme}
           state={voice.state}
           activationSource={voice.activationSource ?? "controller"}
           transcript={voice.transcript}
@@ -1323,6 +1332,7 @@ function App(): ReactElement {
       )}
 
       <ControllerModal
+        theme={theme}
         open={controllerOpen}
         connected={controller.connected}
         controllerName={controller.controllerName}

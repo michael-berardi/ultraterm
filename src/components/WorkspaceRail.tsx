@@ -594,6 +594,7 @@ export function WorkspaceRail({
         <div
           ref={profileMenuRef}
           className="terminal-context-menu terminal-context-menu--profiles"
+          data-theme={theme}
           role="menu"
           aria-label="Launch profile"
           style={{ left: profileMenu.x, top: profileMenu.y }}
@@ -622,6 +623,7 @@ export function WorkspaceRail({
         <div
           ref={contextMenuRef}
           className="terminal-context-menu"
+          data-theme={theme}
           role="menu"
           aria-label={`Terminal ${contextMenuSession?.slot ?? ""} quick actions`}
           style={{ left: contextMenu.x, top: contextMenu.y }}

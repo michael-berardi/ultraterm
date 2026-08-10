@@ -2,10 +2,11 @@ import { useEffect, useRef, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { Mic, Sparkles, X } from "lucide-react";
 import { ThinkingOrb } from "thinking-orbs";
-import type { VoiceInputState } from "../types";
+import type { ThemeId, VoiceInputState } from "../types";
 
 interface VoicePreviewModalProps {
   state: Exclude<VoiceInputState, "idle">;
+  theme: ThemeId;
   activationSource: "keyboard" | "controller";
   transcript: string;
   error: string | null;
@@ -34,6 +35,7 @@ export function getVoiceModalAction(
 
 export function VoicePreviewModal({
   state,
+  theme,
   activationSource,
   transcript,
   error,
@@ -129,7 +131,7 @@ export function VoicePreviewModal({
   const currentLevel = waveform[waveform.length - 1] ?? 0;
 
   return createPortal(
-    <div className="voice-modal-backdrop" role="presentation">
+    <div className="voice-modal-backdrop" data-theme={theme} role="presentation">
       <section
         ref={modalRef}
         className={`voice-modal voice-modal--${state}`}
@@ -159,7 +161,7 @@ export function VoicePreviewModal({
               <ThinkingOrb
                 state="listening"
                 size={64}
-                theme="dark"
+                theme={theme === "white" ? "light" : "dark"}
                 aria-hidden="true"
               />
               <div
@@ -200,7 +202,7 @@ export function VoicePreviewModal({
             <ThinkingOrb
               state={state === "connecting" ? "working" : "solving"}
               size={64}
-              theme="dark"
+              theme={theme === "white" ? "light" : "dark"}
               aria-hidden="true"
             />
           )}

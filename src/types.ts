@@ -1,4 +1,4 @@
-export type ThemeId = "oled" | "aurora" | "titanium" | "ember";
+export type ThemeId = "oled" | "white" | "aurora" | "titanium" | "ember";
 export type EffectMode = "off" | "focus" | "spectrum";
 export type TerminalCursorStyle = "bar" | "block" | "underline";
 

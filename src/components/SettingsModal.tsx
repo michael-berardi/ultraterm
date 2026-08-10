@@ -21,6 +21,7 @@ import type {
 
 const THEMES: Array<{ id: ThemeId; name: string; detail: string }> = [
   { id: "oled", name: "Obsidian OLED", detail: "Pure black · pixel-crisp contrast" },
+  { id: "white", name: "White", detail: "Pure white · crisp dark contrast" },
   { id: "titanium", name: "Titanium", detail: "Machined silver · cool depth" },
   { id: "aurora", name: "Aurora", detail: "Polar color · midnight glass" },
   { id: "ember", name: "Ember", detail: "Warm carbon · quiet radiance" },

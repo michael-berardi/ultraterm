@@ -1,6 +1,6 @@
 # UltraTerm
 
-UltraTerm is a macOS desktop workspace for running multiple Oh My Pi (OMP) terminals inside one managed window. It combines a Rust/Tauri PTY backend with a React/xterm.js interface, a three-pane matrix layout, persistent tmux-backed sessions, UltraVox voice input, PS4 controller navigation, and OLED-focused themes.
+UltraTerm is a macOS desktop workspace for running multiple Oh My Pi (OMP) terminals inside one managed window. It combines a Rust/Tauri PTY backend with a React/xterm.js interface, a three-pane matrix layout, persistent tmux-backed sessions, UltraVox voice input, PS4 controller navigation, OLED-focused themes, and a high-contrast White theme.
 
 ## Requirements
 

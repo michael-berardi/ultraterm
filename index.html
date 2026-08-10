@@ -10,6 +10,16 @@
       content="UltraTerm unifies durable OMP terminal sessions into one managed desktop command matrix."
     />
     <title>UltraTerm</title>
+    <script>
+      try {
+        if (localStorage.getItem("ultraterm.theme") === "white") {
+          document.documentElement.dataset.theme = "white";
+          document.querySelector('meta[name="theme-color"]').content = "#ffffff";
+        }
+      } catch {
+        // Local storage may be unavailable during the earliest WebView startup.
+      }
+    </script>
     <style>
       html, body { margin: 0; height: 100%; }
       body {
@@ -20,6 +30,10 @@
           linear-gradient(150deg, #09090b 0%, #000000 54%, #060608 100%);
         color: #f3f2f5;
         font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
+      }
+      html[data-theme="white"] body {
+        background: #fff;
+        color: #18181d;
       }
       #root { height: 100%; }
       .boot-splash-inline {
@@ -39,6 +53,12 @@
         background: rgba(17, 16, 19, 0.7);
         box-shadow: 0 30px 80px rgba(0, 0, 0, 0.72), inset 0 1px rgba(255, 255, 255, 0.06);
       }
+      html[data-theme="white"] .boot-splash-inline__card {
+        border-color: rgba(24, 24, 29, 0.14);
+        border-top-color: rgba(24, 24, 29, 0.25);
+        background: rgba(255, 255, 255, 0.985);
+        box-shadow: 0 24px 64px rgba(32, 32, 40, 0.18);
+      }
       .boot-splash-inline__wordmark {
         background: linear-gradient(180deg, #fff 0%, #eee9fb 55%, rgba(214, 209, 223, 0.72) 100%);
         background-clip: text;
@@ -49,12 +69,20 @@
         letter-spacing: -0.055em;
         line-height: 0.95;
       }
+      html[data-theme="white"] .boot-splash-inline__wordmark {
+        background: none;
+        color: #18181d;
+      }
       .boot-splash-inline__byline {
         color: rgba(228, 225, 234, 0.68);
         font-size: 9px;
         font-weight: 660;
         letter-spacing: 0.17em;
         text-transform: uppercase;
+      }
+      html[data-theme="white"] .boot-splash-inline__byline,
+      html[data-theme="white"] .boot-splash-inline__status {
+        color: rgba(30, 30, 36, 0.68);
       }
       .boot-splash-inline__bar {
         overflow: hidden;
@@ -64,6 +92,9 @@
         border-radius: 2px;
         background: rgba(255, 255, 255, 0.09);
       }
+      html[data-theme="white"] .boot-splash-inline__bar {
+        background: rgba(24, 24, 29, 0.1);
+      }
       .boot-splash-inline__bar > span {
         display: block;
         width: 40%;
@@ -71,6 +102,9 @@
         border-radius: inherit;
         background: linear-gradient(90deg, transparent, #cfc3ec, transparent);
         animation: boot-splash-sheen 1.1s ease-in-out infinite;
+      }
+      html[data-theme="white"] .boot-splash-inline__bar > span {
+        background: linear-gradient(90deg, transparent, #292930, transparent);
       }
       .boot-splash-inline__status {
         margin: 6px 0 0;

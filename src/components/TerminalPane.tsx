@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -9,8 +9,15 @@ import "@xterm/xterm/css/xterm.css";
 import "./TerminalPane.css";
 import { bytesToBase64, resizeSession, scrollSession, writeToSession } from "../lib/terminalApi";
 import {
+  TERMINAL_APPEARANCE_RESET_OUTPUT,
+  ompAppearanceChangeFor,
+  ompAppearanceReportFor,
+  terminalThemeFor,
+} from "../lib/terminalThemes";
+import {
   DEFAULT_TERMINAL_PREFERENCES,
   type TerminalController,
+  type ThemeId,
   type TerminalPreferences,
   type WorkspaceSession,
 } from "../types";
@@ -19,6 +26,7 @@ interface TerminalPaneProps {
   session: WorkspaceSession;
   scrollback: number;
   preferences: TerminalPreferences;
+  theme: ThemeId;
   active: boolean;
   maximized: boolean;
   exiting: boolean;
@@ -32,32 +40,6 @@ interface TerminalPaneProps {
 }
 
 
-const TERMINAL_THEME = {
-  background: "#000000",
-  foreground: "#ececf0",
-  cursor: "#ffffff",
-  cursorAccent: "#000000",
-  selectionBackground: "#9f9aaf66",
-  scrollbarSliderBackground: "rgba(116, 116, 124, 0.46)",
-  scrollbarSliderHoverBackground: "rgba(142, 142, 150, 0.62)",
-  scrollbarSliderActiveBackground: "rgba(162, 162, 170, 0.76)",
-  black: "#08080a",
-  red: "#ff8587",
-  green: "#83e6ad",
-  yellow: "#e8ca82",
-  blue: "#8db7ff",
-  magenta: "#d2a9ff",
-  cyan: "#8ddde5",
-  white: "#e3e3e8",
-  brightBlack: "#6b6a72",
-  brightRed: "#ffaaa8",
-  brightGreen: "#a8f1c5",
-  brightYellow: "#f3dfa8",
-  brightBlue: "#b3ceff",
-  brightMagenta: "#e2c6ff",
-  brightCyan: "#b2edf2",
-  brightWhite: "#ffffff",
-} as const;
 const TERMINAL_FONT_FAMILY = [
   '"SFMono-Regular"',
   '"Cascadia Code"',
@@ -95,6 +77,7 @@ function loadBundledTerminalFonts(): Promise<void> {
 
 const TEXT_ENCODER = new TextEncoder();
 const REMOTE_SCROLL_CHUNK_LINES = 24;
+const OMP_APPEARANCE_REPORT_DELAY_MS = 150;
 
 function wheelScrollScale(event: WheelEvent, rows: number): number {
   if (event.deltaMode === 0) return 1 / 32;
@@ -133,6 +116,7 @@ function terminalName(slot: number): string {
 export function TerminalPane({
   session,
   scrollback,
+  theme,
   preferences,
   active,
   maximized,
@@ -148,8 +132,51 @@ export function TerminalPane({
   const [entering, setEntering] = useState(!reducedMotion && !suppressEntrance);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
   const preferencesRef = useRef(preferences);
   preferencesRef.current = preferences;
+  const sessionStatusRef = useRef(session.status);
+  sessionStatusRef.current = session.status;
+  const appearanceRefreshKeyRef = useRef<string | null>(null);
+  const appearanceReportTimerRef = useRef(0);
+  const requestOmpAppearanceRefresh = useCallback((selectedTheme: ThemeId) => {
+    const terminal = terminalRef.current;
+    if (!terminal || sessionStatusRef.current !== "live") return;
+
+    const refreshKey = `${session.id}:${selectedTheme}`;
+    if (appearanceRefreshKeyRef.current === refreshKey) return;
+    appearanceRefreshKeyRef.current = refreshKey;
+    window.clearTimeout(appearanceReportTimerRef.current);
+    const fail = (error: unknown) => {
+      if (appearanceRefreshKeyRef.current === refreshKey) {
+        appearanceRefreshKeyRef.current = null;
+      }
+      console.error(`UltraTerm could not synchronize OMP appearance for ${terminalName(session.slot)}`, error);
+    };
+
+    terminal.write(TERMINAL_APPEARANCE_RESET_OUTPUT, () => {
+      if (terminalRef.current !== terminal || sessionStatusRef.current !== "live") {
+        if (appearanceRefreshKeyRef.current === refreshKey) {
+          appearanceRefreshKeyRef.current = null;
+        }
+        return;
+      }
+      const appearanceInput = bytesToBase64(TEXT_ENCODER.encode(ompAppearanceChangeFor(selectedTheme)));
+      void writeToSession(session.id, appearanceInput).then(() => {
+        appearanceReportTimerRef.current = window.setTimeout(() => {
+          appearanceReportTimerRef.current = 0;
+          if (
+            terminalRef.current !== terminal ||
+            sessionStatusRef.current !== "live" ||
+            appearanceRefreshKeyRef.current !== refreshKey
+          ) return;
+          const reportInput = bytesToBase64(TEXT_ENCODER.encode(ompAppearanceReportFor(selectedTheme)));
+          void writeToSession(session.id, reportInput).catch(fail);
+        }, OMP_APPEARANCE_REPORT_DELAY_MS);
+      }).catch(fail);
+    });
+  }, [session.id, session.slot]);
   useEffect(() => {
     if (reducedMotion) setEntering(false);
   }, [reducedMotion]);
@@ -181,7 +208,7 @@ export function TerminalPane({
       scrollOnEraseInDisplay: false,
       scrollSensitivity: 1,
       smoothScrollDuration: 0,
-      theme: TERMINAL_THEME,
+      theme: terminalThemeFor(themeRef.current),
     });
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
@@ -306,6 +333,7 @@ export function TerminalPane({
       terminal.options.fontSize = currentPreferences.fontSize;
       terminal.options.cursorStyle = currentPreferences.cursorStyle;
       terminal.options.cursorBlink = currentPreferences.cursorBlink;
+      terminal.options.theme = terminalThemeFor(themeRef.current);
       terminal.open(host);
       try {
         const webglAddon = new WebglAddon();
@@ -327,6 +355,7 @@ export function TerminalPane({
         trackInput,
       });
       fit(true);
+      requestOmpAppearanceRefresh(themeRef.current);
     };
     void loadBundledTerminalFonts().then(openTerminal).catch((error) => {
       console.error(`UltraTerm bundled fonts failed to load for ${terminalName(session.slot)}`, error);
@@ -338,6 +367,7 @@ export function TerminalPane({
       window.cancelAnimationFrame(scrollFrame);
       window.cancelAnimationFrame(resizeFrame);
       window.clearTimeout(resizeTimer);
+      window.clearTimeout(appearanceReportTimerRef.current);
       onControllerReady(session.id, null);
       resizeObserver.disconnect();
       host.removeEventListener("keydown", handleKeyDown, true);
@@ -347,11 +377,24 @@ export function TerminalPane({
       terminalRef.current = null;
       fitAddonRef.current = null;
     };
-  }, [onControllerReady, onTerminalResize, session.id, session.slot]);
+  }, [onControllerReady, onTerminalResize, requestOmpAppearanceRefresh, session.id, session.slot]);
 
   useEffect(() => {
     if (terminalRef.current) terminalRef.current.options.scrollback = scrollback;
   }, [scrollback]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    terminal.options.theme = terminalThemeFor(theme);
+    terminal.clearTextureAtlas();
+    terminal.refresh(0, terminal.rows - 1);
+    if (session.status !== "live") {
+      appearanceRefreshKeyRef.current = null;
+      return;
+    }
+    requestOmpAppearanceRefresh(theme);
+  }, [requestOmpAppearanceRefresh, session.status, theme]);
 
   useEffect(() => {
     const terminal = terminalRef.current;

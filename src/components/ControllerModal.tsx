@@ -2,9 +2,10 @@ import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { Gamepad2, Mic, MicOff, X } from "lucide-react";
 import { PS4_CONTROL_MAP } from "../hooks/usePs4Controller";
-import type { VoiceInputState } from "../types";
+import type { ThemeId, VoiceInputState } from "../types";
 
 interface ControllerModalProps {
+  theme: ThemeId;
   open: boolean;
   connected: boolean;
   controllerName: string | null;
@@ -14,6 +15,7 @@ interface ControllerModalProps {
 }
 
 export function ControllerModal({
+  theme,
   open,
   connected,
   controllerName,
@@ -70,7 +72,7 @@ export function ControllerModal({
   if (!open) return null;
 
   return createPortal(
-    <div className="controller-overlay" role="presentation" onMouseDown={(event) => {
+    <div className="controller-overlay" data-theme={theme} role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose();
     }}>
       <div ref={modalRef} className="controller-modal" role="dialog" aria-modal="true" aria-labelledby="controller-title">
