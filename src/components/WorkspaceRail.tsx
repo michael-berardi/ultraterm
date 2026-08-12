@@ -507,10 +507,24 @@ export function WorkspaceRail({
 
             <div
               className="token-cache-summary"
+              aria-label="24-hour cache hit rates"
               title="Cached input tokens divided by all input-side tokens during the past 24 hours"
             >
-              <span>24h cache hit</span>
-              <strong>{formatCacheHitPercent(telemetry.past24Hours)}</strong>
+              <span className="token-cache-summary__heading">24h cache hit</span>
+              <dl>
+                <div>
+                  <dt>Coding plan</dt>
+                  <dd>{formatCacheHitPercent(telemetry.past24HourChannels.subscription)}</dd>
+                </div>
+                <div>
+                  <dt>Paid API</dt>
+                  <dd>{formatCacheHitPercent(telemetry.past24HourChannels.paidApi)}</dd>
+                </div>
+                <div>
+                  <dt>Blended</dt>
+                  <dd>{formatCacheHitPercent(telemetry.past24Hours)}</dd>
+                </div>
+              </dl>
             </div>
 
             <div className="token-today">
@@ -518,8 +532,8 @@ export function WorkspaceRail({
               <CountUpTokens value={telemetry.today.total} />
               <div className="token-channel-list" aria-label="Today's token channels">
                 <div className="token-channel-row">
-                  <span>Subscription</span>
-                  <strong title={`${telemetry.todayChannels.subscription.total.toLocaleString()} subscription tokens today`}>
+                  <span>Coding plan</span>
+                  <strong title={`${telemetry.todayChannels.subscription.total.toLocaleString()} coding-plan tokens today`}>
                     {telemetry.todayChannels.subscription.total.toLocaleString()}
                   </strong>
                 </div>

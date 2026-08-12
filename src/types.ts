@@ -146,6 +146,7 @@ export interface TokenTelemetry {
   todayChannels: TokenChannelTelemetry;
   history: TokenHistoryDay[];
   past24Hours: TokenCounts;
+  past24HourChannels: TokenChannelTelemetry;
   past7Days: TokenCounts;
   allTime: TokenCounts;
   activeSubagents: number;

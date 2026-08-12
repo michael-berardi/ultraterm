@@ -155,6 +155,11 @@ const DEFAULT_TOKEN_TELEMETRY: TokenTelemetry = {
     paidApi: { ...EMPTY_TOKEN_COUNTS },
     paidApiCostUsd: 0,
   },
+  past24HourChannels: {
+    subscription: { ...EMPTY_TOKEN_COUNTS },
+    paidApi: { ...EMPTY_TOKEN_COUNTS },
+    paidApiCostUsd: 0,
+  },
   history: [],
   activeSubagents: 0,
   inactiveSubagents: 0,

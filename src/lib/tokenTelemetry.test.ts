@@ -13,4 +13,14 @@ describe("cacheHitPercent", () => {
     expect(cacheHitPercent(counts)).toBeNull();
     expect(formatCacheHitPercent(counts)).toBe("—");
   });
+
+  it("keeps coding-plan, paid-API, and blended rates independent", () => {
+    const codingPlan = { input: 100, output: 0, cacheRead: 900, cacheWrite: 0, total: 100 };
+    const paidApi = { input: 800, output: 0, cacheRead: 200, cacheWrite: 0, total: 800 };
+    const blended = { input: 900, output: 0, cacheRead: 1_100, cacheWrite: 0, total: 900 };
+
+    expect(formatCacheHitPercent(codingPlan)).toBe("90.0%");
+    expect(formatCacheHitPercent(paidApi)).toBe("20.0%");
+    expect(formatCacheHitPercent(blended)).toBe("55.0%");
+  });
 });

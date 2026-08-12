@@ -101,6 +101,7 @@ pub struct TokenTelemetry {
     pub past_7_days: TokenCounts,
     pub all_time: TokenCounts,
     pub today_channels: TokenChannelTelemetry,
+    pub past_24_hour_channels: TokenChannelTelemetry,
     pub active_subagents: usize,
     pub inactive_subagents: usize,
     pub parallel_agents: usize,
@@ -131,6 +132,7 @@ struct AggregatedUsage {
     all_time: TokenCounts,
     today: TokenCounts,
     today_channels: TokenChannelTelemetry,
+    past_24_hour_channels: TokenChannelTelemetry,
     history: Vec<TokenHistoryDay>,
 }
 
@@ -218,6 +220,7 @@ fn aggregate_usage<'a>(
     let mut all_time = TokenCounts::default();
     let mut today = TokenCounts::default();
     let mut today_channels = TokenChannelTelemetry::default();
+    let mut past_24_hour_channels = TokenChannelTelemetry::default();
     let mut days: BTreeMap<NaiveDate, (TokenCounts, BTreeMap<String, TokenCounts>)> =
         BTreeMap::new();
 
@@ -229,6 +232,7 @@ fn aggregate_usage<'a>(
             }
             if record.timestamp >= past_24_hour_boundary {
                 past_24_hours.add(&record.counts);
+                add_channel_usage(&mut past_24_hour_channels, record, pricing);
             }
             let Some(date) = local_date(record.timestamp) else {
                 continue;
@@ -269,6 +273,7 @@ fn aggregate_usage<'a>(
         all_time,
         today,
         today_channels,
+        past_24_hour_channels,
         history,
     }
 }
@@ -279,13 +284,41 @@ struct CachedFileUsage {
     usage: FileUsage,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct PricingSourceFingerprint {
+    path: PathBuf,
+    modified: Option<SystemTime>,
+    length: Option<u64>,
+    wal_modified: Option<SystemTime>,
+    wal_length: Option<u64>,
+}
+
+#[derive(Clone, Copy)]
+struct CachedModelPrice {
+    price: ModelPrice,
+    updated_at: i64,
+}
+
+fn insert_freshest_model_price(
+    pricing: &mut HashMap<String, CachedModelPrice>,
+    model: String,
+    candidate: CachedModelPrice,
+) {
+    let replace = pricing
+        .get(&model)
+        .is_none_or(|current| candidate.updated_at >= current.updated_at);
+    if replace {
+        pricing.insert(model, candidate);
+    }
+}
+
 pub struct TokenTelemetryManager {
     file_cache: HashMap<PathBuf, CachedFileUsage>,
     registered_sessions: HashSet<PathBuf>,
     registry_loaded: bool,
     index_loaded: bool,
     pricing: HashMap<String, ModelPrice>,
-    pricing_modified: Option<SystemTime>,
+    pricing_sources: Vec<PricingSourceFingerprint>,
     snapshot: Option<(Instant, TokenTelemetry)>,
 }
 
@@ -297,7 +330,7 @@ impl Default for TokenTelemetryManager {
             registry_loaded: false,
             index_loaded: false,
             pricing: HashMap::new(),
-            pricing_modified: None,
+            pricing_sources: Vec::new(),
             snapshot: None,
         }
     }
@@ -396,6 +429,7 @@ impl TokenTelemetryManager {
             today_channels: aggregate.today_channels,
             history: aggregate.history,
             past_24_hours: aggregate.past_24_hours,
+            past_24_hour_channels: aggregate.past_24_hour_channels,
             past_7_days: aggregate.past_7_days,
             all_time: aggregate.all_time,
             active_subagents,
@@ -502,18 +536,68 @@ impl TokenTelemetryManager {
     }
 
     fn refresh_model_pricing(&mut self, home: &Path) {
-        let path = home.join(".omp").join("agent").join("models.db");
-        let modified = fs::metadata(&path)
-            .and_then(|metadata| metadata.modified())
-            .ok();
-        if modified.is_some() && modified == self.pricing_modified {
+        let sources = model_pricing_sources(home);
+        if sources == self.pricing_sources {
             return;
         }
-        if let Ok(pricing) = load_model_pricing(&path) {
-            self.pricing = pricing;
-            self.pricing_modified = modified;
+
+        let mut cached_prices: HashMap<String, CachedModelPrice> = HashMap::new();
+        for source in &sources {
+            let Ok(source_prices) = load_cached_model_pricing(&source.path) else {
+                return;
+            };
+            for (model, candidate) in source_prices {
+                insert_freshest_model_price(&mut cached_prices, model, candidate);
+            }
+        }
+
+        let mut pricing = fallback_model_pricing();
+        pricing.extend(
+            cached_prices
+                .into_iter()
+                .map(|(model, cached)| (model, cached.price)),
+        );
+        self.pricing = pricing;
+        self.pricing_sources = sources;
+    }
+}
+
+fn model_pricing_paths(home: &Path) -> Vec<PathBuf> {
+    let omp_directory = home.join(".omp");
+    let mut paths = vec![omp_directory.join("agent").join("models.db")];
+    if let Ok(profiles) = fs::read_dir(omp_directory.join("profiles")) {
+        for profile in profiles.flatten() {
+            let path = profile.path().join("agent").join("models.db");
+            if path.is_file() {
+                paths.push(path);
+            }
         }
     }
+    paths.sort();
+    paths
+}
+
+fn model_pricing_sources(home: &Path) -> Vec<PricingSourceFingerprint> {
+    model_pricing_paths(home)
+        .into_iter()
+        .map(|path| {
+            let metadata = fs::metadata(&path).ok();
+            let mut wal_path = path.as_os_str().to_os_string();
+            wal_path.push("-wal");
+            let wal_metadata = fs::metadata(PathBuf::from(wal_path)).ok();
+            PricingSourceFingerprint {
+                path,
+                modified: metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.modified().ok()),
+                length: metadata.map(|metadata| metadata.len()),
+                wal_modified: wal_metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.modified().ok()),
+                wal_length: wal_metadata.map(|metadata| metadata.len()),
+            }
+        })
+        .collect()
 }
 
 fn fallback_model_pricing() -> HashMap<String, ModelPrice> {
@@ -524,6 +608,15 @@ fn fallback_model_pricing() -> HashMap<String, ModelPrice> {
                 input: 0.14,
                 output: 0.28,
                 cache_read: 0.028,
+                cache_write: 0.0,
+            },
+        ),
+        (
+            "deepseek/deepseek-v4-flash-latest",
+            ModelPrice {
+                input: 0.079996,
+                output: 0.252,
+                cache_read: 0.0252,
                 cache_write: 0.0,
             },
         ),
@@ -554,8 +647,8 @@ fn fallback_model_pricing() -> HashMap<String, ModelPrice> {
     .collect()
 }
 
-fn load_model_pricing(path: &Path) -> Result<HashMap<String, ModelPrice>, String> {
-    let mut pricing = fallback_model_pricing();
+fn load_cached_model_pricing(path: &Path) -> Result<HashMap<String, CachedModelPrice>, String> {
+    let mut pricing = HashMap::new();
     if !path.is_file() {
         return Ok(pricing);
     }
@@ -567,7 +660,7 @@ fn load_model_pricing(path: &Path) -> Result<HashMap<String, ModelPrice>, String
             )
         })?;
     let mut statement = connection
-        .prepare("SELECT models FROM model_cache")
+        .prepare("SELECT updated_at, models FROM model_cache")
         .map_err(|error| {
             format!(
                 "Failed to query OMP model pricing {}: {error}",
@@ -575,14 +668,22 @@ fn load_model_pricing(path: &Path) -> Result<HashMap<String, ModelPrice>, String
             )
         })?;
     let rows = statement
-        .query_map([], |row| row.get::<_, String>(0))
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
         .map_err(|error| {
             format!(
                 "Failed to load OMP model pricing {}: {error}",
                 path.display()
             )
         })?;
-    for row in rows.flatten() {
+    for row in rows {
+        let (updated_at, row) = row.map_err(|error| {
+            format!(
+                "Failed to decode OMP model pricing {}: {error}",
+                path.display()
+            )
+        })?;
         let Ok(Value::Array(models)) = serde_json::from_str::<Value>(&row) else {
             continue;
         };
@@ -593,28 +694,32 @@ fn load_model_pricing(path: &Path) -> Result<HashMap<String, ModelPrice>, String
             let Some(cost) = model.get("cost") else {
                 continue;
             };
-            let price = ModelPrice {
-                input: cost
-                    .get("input")
-                    .and_then(Value::as_f64)
-                    .unwrap_or_default(),
-                output: cost
-                    .get("output")
-                    .and_then(Value::as_f64)
-                    .unwrap_or_default(),
-                cache_read: cost
-                    .get("cacheRead")
-                    .and_then(Value::as_f64)
-                    .unwrap_or_default(),
-                cache_write: cost
-                    .get("cacheWrite")
-                    .and_then(Value::as_f64)
-                    .unwrap_or_default(),
+            let cached = CachedModelPrice {
+                price: ModelPrice {
+                    input: cost
+                        .get("input")
+                        .and_then(Value::as_f64)
+                        .unwrap_or_default(),
+                    output: cost
+                        .get("output")
+                        .and_then(Value::as_f64)
+                        .unwrap_or_default(),
+                    cache_read: cost
+                        .get("cacheRead")
+                        .and_then(Value::as_f64)
+                        .unwrap_or_default(),
+                    cache_write: cost
+                        .get("cacheWrite")
+                        .and_then(Value::as_f64)
+                        .unwrap_or_default(),
+                },
+                updated_at,
             };
             let id = id.trim_start_matches('~').to_string();
-            pricing.insert(id.clone(), price);
-            if let Some(short) = id.rsplit('/').next() {
-                pricing.insert(short.to_string(), price);
+            let short = id.rsplit('/').next().map(str::to_string);
+            insert_freshest_model_price(&mut pricing, id, cached);
+            if let Some(short) = short {
+                insert_freshest_model_price(&mut pricing, short, cached);
             }
         }
     }
@@ -1045,24 +1150,42 @@ fn collect_session_files(session_path: &Path, files: &mut HashSet<PathBuf>) {
     if session_path.is_file() {
         files.insert(session_path.to_path_buf());
     }
-    collect_jsonl_files(&session_path.with_extension(""), files);
+    collect_telemetry_files(&session_path.with_extension(""), files);
 }
 
-fn collect_jsonl_files(directory: &Path, files: &mut HashSet<PathBuf>) {
+fn collect_telemetry_files(directory: &Path, files: &mut HashSet<PathBuf>) {
     let Ok(entries) = fs::read_dir(directory) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_jsonl_files(&path, files);
+            collect_telemetry_files(&path, files);
         } else if path
             .extension()
             .is_some_and(|extension| extension == "jsonl")
+            || path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".bash.log"))
+                && is_omp_event_stream(&path)
         {
             files.insert(path);
         }
     }
+}
+
+fn is_omp_event_stream(path: &Path) -> bool {
+    let Ok(file) = File::open(path) else {
+        return false;
+    };
+    let Some(Ok(first_line)) = BufReader::new(file).lines().next() else {
+        return false;
+    };
+    serde_json::from_str::<Value>(&first_line).is_ok_and(|value| {
+        value.get("type").and_then(Value::as_str) == Some("session")
+            && value.get("version").and_then(Value::as_u64) == Some(3)
+    })
 }
 
 fn parse_usage_file(path: &Path) -> Result<FileUsage, String> {
@@ -1086,6 +1209,12 @@ fn parse_usage_file(path: &Path) -> Result<FileUsage, String> {
             usage.model = Some(model.to_string());
         }
 
+        if !matches!(
+            value.get("type").and_then(Value::as_str),
+            Some("message" | "message_end")
+        ) {
+            continue;
+        }
         let Some(message) = value.get("message") else {
             continue;
         };
@@ -1122,7 +1251,9 @@ fn parse_usage_file(path: &Path) -> Result<FileUsage, String> {
             },
         };
         usage.total.add(&counts);
-        if let Some(timestamp) = timestamp_seconds(value.get("timestamp").and_then(Value::as_str)) {
+        if let Some(timestamp) = timestamp_seconds(value.get("timestamp").and_then(Value::as_str))
+            .or_else(|| json_timestamp_seconds(message.get("timestamp")))
+        {
             usage.timed.push(TimedUsage {
                 timestamp,
                 model: record_model,
@@ -1144,6 +1275,23 @@ fn timestamp_seconds(timestamp: Option<&str>) -> Option<i64> {
         .map(|timestamp| timestamp.timestamp())
 }
 
+fn json_timestamp_seconds(timestamp: Option<&Value>) -> Option<i64> {
+    let timestamp = timestamp?;
+    if let Some(timestamp) = timestamp.as_str() {
+        return timestamp_seconds(Some(timestamp));
+    }
+    let timestamp = timestamp.as_i64().or_else(|| {
+        timestamp
+            .as_u64()
+            .and_then(|value| i64::try_from(value).ok())
+    })?;
+    Some(if timestamp >= 100_000_000_000 {
+        timestamp / 1_000
+    } else {
+        timestamp
+    })
+}
+
 fn session_id(path: &Path) -> Option<String> {
     path.file_stem()?
         .to_str()?
@@ -1152,9 +1300,12 @@ fn session_id(path: &Path) -> Option<String> {
 }
 
 fn is_counted_subagent(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name != "__advisor.jsonl")
+    path.extension()
+        .is_some_and(|extension| extension == "jsonl")
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name != "__advisor.jsonl")
 }
 
 fn subagent_is_complete(path: &Path, usage: &FileUsage) -> bool {
@@ -1170,6 +1321,36 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
     use tempfile::tempdir;
+
+    fn pricing_models_json(input: f64) -> String {
+        serde_json::json!([{
+            "id": "~deepseek/deepseek-v4-flash-latest",
+            "cost": {
+                "input": input,
+                "output": 0.252,
+                "cacheRead": 0.0252,
+                "cacheWrite": 0.0
+            }
+        }])
+        .to_string()
+    }
+
+    fn create_pricing_db(path: &Path, updated_at: i64, input: f64) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let connection = Connection::open(path).unwrap();
+        connection
+            .execute(
+                "CREATE TABLE model_cache (updated_at INTEGER NOT NULL, models TEXT NOT NULL)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO model_cache (updated_at, models) VALUES (?1, ?2)",
+                params![updated_at, pricing_models_json(input)],
+            )
+            .unwrap();
+    }
 
     #[test]
     fn extracts_session_id_from_omp_path() {
@@ -1207,7 +1388,7 @@ mod tests {
     }
 
     #[test]
-    fn discovers_nested_subagent_and_delegation_transcripts() {
+    fn discovers_nested_subagent_and_omp_stream_telemetry() {
         let root = std::env::temp_dir().join(format!(
             "ultraterm-telemetry-delegations-{}",
             std::process::id()
@@ -1215,13 +1396,24 @@ mod tests {
         let nested = root.join("delegated-task");
         fs::create_dir_all(&nested).unwrap();
         let transcript = nested.join("worker.jsonl");
+        let paid_stream = nested.join("paid-api.bash.log");
+        let unrelated_log = nested.join("other.bash.log");
         fs::write(&transcript, "").unwrap();
+        fs::write(
+            &paid_stream,
+            "{\"type\":\"session\",\"version\":3,\"id\":\"paid\"}\n",
+        )
+        .unwrap();
+        fs::write(&unrelated_log, "ordinary command output\n").unwrap();
 
         let mut files = HashSet::new();
-        collect_jsonl_files(&root, &mut files);
+        collect_telemetry_files(&root, &mut files);
 
         assert!(files.contains(&transcript));
+        assert!(files.contains(&paid_stream));
+        assert!(!files.contains(&unrelated_log));
         assert!(is_counted_subagent(&transcript));
+        assert!(!is_counted_subagent(&paid_stream));
         assert!(!is_counted_subagent(Path::new("__advisor.jsonl")));
         fs::remove_dir_all(root).unwrap();
     }
@@ -1465,6 +1657,44 @@ mod tests {
     }
 
     #[test]
+    fn parses_nested_omp_stream_once_with_message_timestamp() {
+        let root = tempdir().unwrap();
+        let stream = root.path().join("paid-api.bash.log");
+        let assistant = "{\"role\":\"assistant\",\"provider\":\"openrouter\",\"model\":\"~deepseek/deepseek-v4-flash-latest\",\"timestamp\":1786329775974,\"usage\":{\"input\":8423,\"output\":13,\"cacheRead\":64,\"cacheWrite\":0,\"totalTokens\":8500}}";
+        fs::write(
+            &stream,
+            format!(
+                "{{\"type\":\"session\",\"version\":3,\"id\":\"paid\"}}\n\
+                 {{\"type\":\"message_start\",\"message\":{assistant}}}\n\
+                 {{\"type\":\"message_end\",\"message\":{assistant}}}\n\
+                 {{\"type\":\"turn_end\",\"message\":{assistant}}}\n"
+            ),
+        )
+        .unwrap();
+
+        let usage = parse_usage_file(&stream).unwrap();
+
+        assert_eq!(usage.assistant_records, 1);
+        assert_eq!(usage.total.input, 8423);
+        assert_eq!(usage.total.output, 13);
+        assert_eq!(usage.total.cache_read, 64);
+        assert_eq!(usage.timed.len(), 1);
+        assert_eq!(usage.timed[0].timestamp, 1_786_329_775);
+        assert_eq!(usage.timed[0].provider.as_deref(), Some("openrouter"));
+        assert_eq!(
+            usage.timed[0].model.as_deref(),
+            Some("~deepseek/deepseek-v4-flash-latest")
+        );
+        assert!(matches!(
+            token_channel(
+                usage.timed[0].provider.as_deref(),
+                usage.timed[0].model.as_deref()
+            ),
+            TokenChannel::PaidApi
+        ));
+    }
+
+    #[test]
     fn persisted_index_survives_source_deletion_and_manager_reload() {
         let root = tempdir().unwrap();
         let home = root.path();
@@ -1525,6 +1755,127 @@ mod tests {
     }
 
     #[test]
+    fn loads_profile_specific_model_pricing() {
+        let root = tempdir().unwrap();
+        let models_path = root
+            .path()
+            .join(".omp/profiles/deepseek-v4-flash/agent/models.db");
+        create_pricing_db(&models_path, 1, 0.079996);
+        let mut manager = TokenTelemetryManager::default();
+
+        manager.refresh_model_pricing(root.path());
+
+        let price = model_price(
+            &manager.pricing,
+            Some("openrouter/~deepseek/deepseek-v4-flash-latest"),
+        )
+        .copied()
+        .unwrap();
+        assert!((price.input - 0.079996).abs() < f64::EPSILON);
+        assert!((price.output - 0.252).abs() < f64::EPSILON);
+        assert!((price.cache_read - 0.0252).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn freshest_profile_model_price_wins() {
+        let root = tempdir().unwrap();
+        create_pricing_db(
+            &root.path().join(".omp/profiles/z-old/agent/models.db"),
+            1,
+            0.1,
+        );
+        create_pricing_db(
+            &root.path().join(".omp/profiles/a-new/agent/models.db"),
+            2,
+            0.2,
+        );
+        let mut manager = TokenTelemetryManager::default();
+
+        manager.refresh_model_pricing(root.path());
+
+        let price = model_price(
+            &manager.pricing,
+            Some("openrouter/~deepseek/deepseek-v4-flash-latest"),
+        )
+        .unwrap();
+        assert!((price.input - 0.2).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn freshest_provider_row_wins_within_profile() {
+        let root = tempdir().unwrap();
+        let models_path = root.path().join(".omp/profiles/shared/agent/models.db");
+        create_pricing_db(&models_path, 2, 0.2);
+        let connection = Connection::open(&models_path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO model_cache (updated_at, models) VALUES (?1, ?2)",
+                params![1_i64, pricing_models_json(0.1)],
+            )
+            .unwrap();
+        let mut manager = TokenTelemetryManager::default();
+
+        manager.refresh_model_pricing(root.path());
+
+        let price = model_price(
+            &manager.pricing,
+            Some("openrouter/~deepseek/deepseek-v4-flash-latest"),
+        )
+        .unwrap();
+        assert!((price.input - 0.2).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn pricing_refresh_observes_wal_updates() {
+        let root = tempdir().unwrap();
+        let models_path = root.path().join(".omp/profiles/wal/agent/models.db");
+        fs::create_dir_all(models_path.parent().unwrap()).unwrap();
+        let connection = Connection::open(&models_path).unwrap();
+        connection
+            .execute_batch(
+                "PRAGMA journal_mode = WAL;
+                 CREATE TABLE model_cache (updated_at INTEGER NOT NULL, models TEXT NOT NULL);",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO model_cache (updated_at, models) VALUES (?1, ?2)",
+                params![1_i64, pricing_models_json(0.1)],
+            )
+            .unwrap();
+        let mut manager = TokenTelemetryManager::default();
+        manager.refresh_model_pricing(root.path());
+
+        connection
+            .execute(
+                "UPDATE model_cache SET updated_at = ?1, models = ?2",
+                params![2_i64, pricing_models_json(0.2)],
+            )
+            .unwrap();
+        manager.refresh_model_pricing(root.path());
+
+        let price = model_price(
+            &manager.pricing,
+            Some("openrouter/~deepseek/deepseek-v4-flash-latest"),
+        )
+        .unwrap();
+        assert!((price.input - 0.2).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn failed_pricing_sources_are_retried() {
+        let root = tempdir().unwrap();
+        let models_path = root.path().join(".omp/profiles/broken/agent/models.db");
+        fs::create_dir_all(models_path.parent().unwrap()).unwrap();
+        fs::write(&models_path, "not a sqlite database").unwrap();
+        let mut manager = TokenTelemetryManager::default();
+
+        manager.refresh_model_pricing(root.path());
+
+        assert!(manager.pricing_sources.is_empty());
+    }
+
+    #[test]
     fn today_channels_split_subscription_and_paid_api_with_cost() {
         let now = Local
             .with_ymd_and_hms(2026, 8, 9, 12, 0, 0)
@@ -1581,6 +1932,8 @@ mod tests {
         assert_eq!(aggregate.today_channels.subscription.total, 15);
         assert_eq!(aggregate.today_channels.paid_api.total, 1_500_000);
         assert!((aggregate.today_channels.paid_api_cost_usd - 0.287).abs() < 0.000_001);
+        assert_eq!(aggregate.past_24_hour_channels.subscription.total, 15);
+        assert_eq!(aggregate.past_24_hour_channels.paid_api.total, 1_500_000);
     }
 
     #[test]
