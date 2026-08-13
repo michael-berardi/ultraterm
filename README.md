@@ -53,6 +53,7 @@ Each matrix slot receives its own `ultraterm-matrix-N` tmux session. The session
 | `OMP_BIN` | Executable path or command name for OMP; otherwise `omp` is resolved from `PATH`. |
 | `OMP_PROFILE` | Optional OMP profile passed as `--profile`; unset uses OMP's default. |
 | `TMUX_BIN` | Executable path or command name for tmux; otherwise resolved from `PATH` with standard installation paths as fallbacks. |
+| `ULTRAVOX_VOICE_SOCKET` | Optional shared Unix socket path for UltraVox voice input; both apps must inherit the same value. |
 | `CAFFEINATE_BIN` | Optional executable path or command name for macOS `caffeinate`; when unavailable, the launcher runs without it. |
 | `PI_CODING_AGENT_DIR` | Explicit OMP agent data directory used by OMP, history search, and telemetry. |
 | `OMP_HISTORY_DB` | Explicit history database path for UltraTerm history search. |

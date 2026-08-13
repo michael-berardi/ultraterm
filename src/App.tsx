@@ -764,6 +764,7 @@ function App(): ReactElement {
 
   const pollVoiceStatus = useCallback(async (recordingId: string, operation: number) => {
     let lastError: unknown = null;
+    let consecutiveErrors = 0;
     for (let attempt = 0; attempt < 600; attempt += 1) {
       await sleep(250);
       if (voiceOperation.current !== operation) return;
@@ -772,11 +773,18 @@ function App(): ReactElement {
       try {
         response = await voiceInputStatus(recordingId);
         lastError = null;
+        consecutiveErrors = 0;
       } catch (error) {
         lastError = error;
+        consecutiveErrors += 1;
+        if (consecutiveErrors >= 3) throw error;
         continue;
       }
       if (voiceOperation.current !== operation) return;
+
+      if (!response.ok) {
+        throw new Error(response.error ?? "UltraVox could not read the transcription status.");
+      }
 
       if (response.state === "completed") {
         const transcript = response.transcript ?? "";

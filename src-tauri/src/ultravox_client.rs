@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::io;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -12,7 +13,7 @@ use uuid::Uuid;
 
 const PROTOCOL_VERSION: u8 = 1;
 const MAX_FRAME_BYTES: usize = 64 * 1024;
-const SOCKET_ENV: &str = "DICTATOR_VOICE_SOCKET";
+const SOCKET_ENV: &str = "ULTRAVOX_VOICE_SOCKET";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 const SERVICE_READY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -147,13 +148,15 @@ pub async fn cancel_active_recording() -> Result<(), String> {
 }
 
 fn socket_path() -> PathBuf {
-    std::env::var_os(SOCKET_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::temp_dir()
-                .join("com.imploselabs.ultravox")
-                .join("voice-v1.sock")
-        })
+    socket_path_from_override(std::env::var_os(SOCKET_ENV))
+}
+
+fn socket_path_from_override(socket_override: Option<OsString>) -> PathBuf {
+    socket_override.map(PathBuf::from).unwrap_or_else(|| {
+        std::env::temp_dir()
+            .join("com.imploselabs.ultravox")
+            .join("voice-v1.sock")
+    })
 }
 
 async fn ensure_service() -> Result<bool, String> {
@@ -314,6 +317,25 @@ mod tests {
         }))
         .unwrap();
         assert!(!response.service_started);
+    }
+
+    #[test]
+    fn socket_path_defaults_to_shared_ultravox_location() {
+        assert_eq!(
+            socket_path_from_override(None),
+            std::env::temp_dir()
+                .join("com.imploselabs.ultravox")
+                .join("voice-v1.sock")
+        );
+    }
+
+    #[test]
+    fn socket_path_uses_shared_environment_override() {
+        let override_path = OsString::from("/tmp/custom-ultravox-voice.sock");
+        assert_eq!(
+            socket_path_from_override(Some(override_path.clone())),
+            PathBuf::from(override_path)
+        );
     }
 
     #[test]
