@@ -14,6 +14,12 @@ APP_PATH="${APP_PATH:-${ROOT_DIR}/src-tauri/target/release/bundle/macos/${PRODUC
 BUILD_QUEUE="${BUILD_QUEUE:-/Users/libertydesignstudio/dev/scripts/build_queue.py}"
 ALLOW_ADHOC="${ALLOW_ADHOC:-0}"
 
+if [[ "$ALLOW_ADHOC" != "1" ]]; then
+  APPLE_SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:-Developer ID Application: Michael Berardi (T63VT9UAY2)}"
+  APPLE_INSTALLER_SIGNING_IDENTITY="${APPLE_INSTALLER_SIGNING_IDENTITY:-Developer ID Installer: Michael Berardi (T63VT9UAY2)}"
+  NOTARYTOOL_PROFILE="${NOTARYTOOL_PROFILE:-ImploseLabs-Notarization}"
+fi
+
 if [[ "$(uname -s)" != "Darwin" || "$ARCH" != "arm64" ]]; then
   echo "Release packaging currently requires Apple Silicon macOS." >&2
   exit 1
