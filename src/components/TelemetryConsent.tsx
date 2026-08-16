@@ -60,9 +60,11 @@ export function TelemetryConsent({ theme, onChoice }: TelemetryConsentProps): Re
           <div>
             <h2 id="telemetry-consent-title">Help improve UltraTerm</h2>
             <p id="telemetry-consent-detail">
-              Share anonymous usage stats — app version, OS, and terminal counts — to help
-              guide development. Never names, paths, prompts, or terminal content. Optional;
-              change anytime under Settings → Privacy.
+              Share anonymous usage stats — a random install ID, app version, platform,
+              architecture, UTC day, and daily counts of terminal and OMP session starts.
+              Never names, paths, prompts, terminal content, model or token data, commands,
+              URLs, or network identifiers. Identifier rows expire within 34 UTC days;
+              ID-free daily totals within 360 days. Optional; change anytime under Settings → Privacy.
             </p>
           </div>
         </header>

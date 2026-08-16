@@ -250,9 +250,14 @@ export function SettingsModal({
                 <div>
                   <h4 id="telemetry-heading">Anonymous usage stats</h4>
                   <p>
-                    Sends only the app version, OS, and terminal counts to
-                    analytics.libertydesign.studio to help guide development. Never names,
-                    file paths, prompts, or terminal content.
+                    With consent, sends only a random install ID, app version, platform,
+                    architecture, UTC day, and daily counts of successful terminal and OMP
+                    session starts to analytics.libertydesign.studio. Never names, paths,
+                    prompts, terminal content, model or token data, commands, URLs, or
+                    network identifiers. No network or identifier exists before opt-in;
+                    disabling erases the local telemetry ID and pending telemetry state.
+                    Server-side identifier rows expire within 34 UTC days; ID-free daily
+                    totals expire within 360 days.
                   </p>
                 </div>
                 <label className="settings-toggle">
@@ -263,7 +268,7 @@ export function SettingsModal({
                   />
                   <span>
                     <strong>Help improve UltraTerm</strong>
-                    <small>Anonymous and optional — a launch ping plus one heartbeat per day.</small>
+                    <small>Optional — one launch, at most one heartbeat, and one usage report per UTC day.</small>
                   </span>
                 </label>
               </section>

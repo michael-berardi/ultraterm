@@ -11,6 +11,7 @@ import {
   detachSession,
   listPersistentSlots,
   listSessions,
+  recordAppEvent,
   removePersistentSlot,
   systemMetrics,
   tokenTelemetry as fetchTokenTelemetry,
@@ -458,6 +459,13 @@ export function useTerminalWorkspace(sessionCap: number) {
       launchOmp: true,
       launchProfile: profile,
     });
+    // Count only successful starts. The counters contain no IDs, titles,
+    // commands, paths, or terminal output; Rust batches them for one daily
+    // usage report and ignores them until consent is enabled.
+    void recordAppEvent("usage", {
+      terminals: 1,
+      sessions: info.launchedOmp ? 1 : 0,
+    }).catch(() => {});
     setSessions((current) => [
       ...current.filter((session) => session.id !== info.id && session.slot !== info.slot),
       {

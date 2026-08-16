@@ -328,13 +328,26 @@ function App(): ReactElement {
     };
   }, []);
 
+  const telemetryConsentOperation = useRef(0);
   const handleTelemetryChoice = useCallback((enabled: boolean): void => {
-    setTelemetryConsent(enabled ? "enabled" : "disabled");
-    void setAppTelemetryConsent(enabled).catch(() => setTelemetryConsent("unset"));
-  }, []);
+    const operation = ++telemetryConsentOperation.current;
+    const previousConsent = telemetryConsent;
+    if (!enabled) setTelemetryConsent("disabled");
+    void setAppTelemetryConsent(enabled)
+      .then(() => {
+        if (telemetryConsentOperation.current === operation) {
+          setTelemetryConsent(enabled ? "enabled" : "disabled");
+        }
+      })
+      .catch(() => {
+        if (telemetryConsentOperation.current === operation) {
+          setTelemetryConsent(previousConsent);
+        }
+      });
+  }, [telemetryConsent]);
 
-  // Launch event fires once bootstrap settles so the terminal count is real;
-  // heartbeat repeats on a 6h timer and the backend dedups it to one per day.
+  // Launch is sent once bootstrap settles. Heartbeats are attempted at start
+  // and every six hours; Rust enforces one successful report per UTC day.
   const launchEventSent = useRef(false);
   useEffect(() => {
     if (
@@ -344,21 +357,18 @@ function App(): ReactElement {
       || telemetryConsent !== "enabled"
     ) return;
     launchEventSent.current = true;
-    void recordAppEvent("launch", {
-      terminals: workspace.sessions.length,
-      theme,
-    }).catch(() => {});
-  }, [telemetryConsent, telemetryConsentLoaded, theme, workspace.isBooting, workspace.sessions.length]);
+    void recordAppEvent("launch").catch(() => {});
+  }, [telemetryConsent, telemetryConsentLoaded, workspace.isBooting]);
 
   useEffect(() => {
     if (telemetryConsent !== "enabled") return;
-    const beat = () => void recordAppEvent("heartbeat", {
-      terminals: sessionsRef.current.length,
-      theme,
-    }).catch(() => {});
-    const interval = window.setInterval(beat, 6 * 60 * 60 * 1000);
+    void recordAppEvent("heartbeat").catch(() => {});
+    const interval = window.setInterval(
+      () => void recordAppEvent("heartbeat").catch(() => {}),
+      6 * 60 * 60 * 1000,
+    );
     return () => window.clearInterval(interval);
-  }, [telemetryConsent, theme]);
+  }, [telemetryConsent]);
   const [voice, setVoice] = useState<VoiceSession>(IDLE_VOICE_SESSION);
   const voiceOperation = useRef(0);
   const voiceCancellation = useRef(false);

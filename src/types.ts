@@ -75,6 +75,12 @@ export type AppTelemetryConsent = "unset" | "enabled" | "disabled";
 export interface AppTelemetryState {
   consent: AppTelemetryConsent;
 }
+export interface AppTelemetryUsage {
+  /** Successful terminal pane starts observed since the last report. */
+  terminals?: number;
+  /** Successful OMP session starts observed since the last report. */
+  sessions?: number;
+}
 
 /**
  * Maps the OMP profile recorded on a persistent tmux session back to a launch

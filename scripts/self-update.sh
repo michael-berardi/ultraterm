@@ -11,6 +11,7 @@
 #   scripts/self-update.sh --restart    restart only (install current build)
 #   SKIP_INSTALL=1 scripts/self-update.sh   build only, no install/restart
 set -euo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PRODUCT_NAME="UltraTerm"
@@ -67,9 +68,29 @@ if [[ "${ALLOW_ADHOC:-0}" == "1" ]]; then
   codesign --force --deep --sign - "$BUILT_APP"
 else
   SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:-Developer ID Application: Michael Berardi (T63VT9UAY2)}"
-  codesign --force --deep --sign "$SIGNING_IDENTITY" "$BUILT_APP"
+  codesign --force --deep --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$BUILT_APP"
 fi
-codesign --verify --deep --strict "$BUILT_APP"
+if [[ "${ALLOW_ADHOC:-0}" == "1" ]]; then
+  EXPECTED_VERSION="$(node -p "require('${ROOT_DIR}/package.json').version")" \
+    "${ROOT_DIR}/scripts/verify-app-identity.sh" --allow-adhoc "$BUILT_APP"
+else
+  EXPECTED_VERSION="$(node -p "require('${ROOT_DIR}/package.json').version")" \
+    "${ROOT_DIR}/scripts/verify-app-identity.sh" "$BUILT_APP"
+fi
+
+APP_STAGE_ROOT="${INSTALL_PATH}.install.$$"
+APP_STAGE="${APP_STAGE_ROOT}/${PRODUCT_NAME}.app"
+APP_SWAP_BACKUP="${INSTALL_PATH}.previous.$$"
+rm -rf "$APP_STAGE_ROOT" "$APP_SWAP_BACKUP"
+mkdir -p "$APP_STAGE_ROOT"
+ditto "$BUILT_APP" "$APP_STAGE"
+if [[ "${ALLOW_ADHOC:-0}" == "1" ]]; then
+  EXPECTED_VERSION="$(node -p "require('${ROOT_DIR}/package.json').version")" \
+    "${ROOT_DIR}/scripts/verify-app-identity.sh" --allow-adhoc "$APP_STAGE"
+else
+  EXPECTED_VERSION="$(node -p "require('${ROOT_DIR}/package.json').version")" \
+    "${ROOT_DIR}/scripts/verify-app-identity.sh" "$APP_STAGE"
+fi
 
 if [[ -d "$INSTALL_PATH" ]]; then
   mkdir -p "$BACKUP_DIR"
@@ -94,14 +115,31 @@ if pgrep -f "${INSTALL_PATH}/Contents/MacOS" >/dev/null 2>&1; then
   fi
 fi
 
-rm -rf "$INSTALL_PATH"
-ditto "$BUILT_APP" "$INSTALL_PATH"
-xattr -dr com.apple.quarantine "$INSTALL_PATH" 2>/dev/null || true
+if [[ -d "$INSTALL_PATH" ]]; then
+  if ! mv "$INSTALL_PATH" "$APP_SWAP_BACKUP"; then
+    echo "Unable to move the current UltraTerm bundle aside; refusing to swap." >&2
+    exit 1
+  fi
+fi
+if ! mv "$APP_STAGE" "$INSTALL_PATH"; then
+  [[ ! -d "$APP_SWAP_BACKUP" ]] || mv "$APP_SWAP_BACKUP" "$INSTALL_PATH"
+  echo "Unable to install the verified UltraTerm bundle; restored the previous copy." >&2
+  exit 1
+fi
+rm -rf "$APP_STAGE_ROOT"
 echo "Installed ${PRODUCT_NAME} to $INSTALL_PATH"
 
 if [[ "$RUNNING" == "1" || "${ALWAYS_RELAUNCH:-0}" == "1" ]]; then
-  open -n "$INSTALL_PATH"
+  if ! open -n "$INSTALL_PATH"; then
+    rm -rf "$INSTALL_PATH"
+    [[ ! -d "$APP_SWAP_BACKUP" ]] || mv "$APP_SWAP_BACKUP" "$INSTALL_PATH"
+    open -n "$INSTALL_PATH" || true
+    echo "Unable to relaunch the new UltraTerm bundle; restored the previous copy." >&2
+    exit 1
+  fi
+  rm -rf "$APP_SWAP_BACKUP"
   echo "Relaunched ${PRODUCT_NAME}; terminal sessions reattach automatically."
 else
+  rm -rf "$APP_SWAP_BACKUP"
   echo "UltraTerm was not running; launch it with: open -n \"$INSTALL_PATH\""
 fi

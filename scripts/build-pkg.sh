@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PRODUCT_NAME="UltraTerm"
@@ -45,16 +46,25 @@ if [[ -z "$APP_PATH" || ! -d "$APP_PATH" ]]; then
   exit 1
 fi
 
+ALLOW_ADHOC="${ALLOW_ADHOC:-0}"
 if [[ "${REQUIRE_SIGNED:-0}" == "1" && -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
   echo "APPLE_SIGNING_IDENTITY is required for a distributable package." >&2
   exit 1
 fi
 if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
   codesign --force --deep --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$APP_PATH"
-else
+elif [[ "$ALLOW_ADHOC" == "1" ]]; then
   codesign --force --deep --sign - "$APP_PATH"
+else
+  echo "APPLE_SIGNING_IDENTITY is required. Use ALLOW_ADHOC=1 only for local package testing." >&2
+  exit 1
 fi
-codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+if [[ "$ALLOW_ADHOC" == "1" ]]; then
+  EXPECTED_VERSION="$VERSION" \
+    "${ROOT_DIR}/scripts/verify-app-identity.sh" --allow-adhoc "$APP_PATH"
+else
+  EXPECTED_VERSION="$VERSION" "${ROOT_DIR}/scripts/verify-app-identity.sh" "$APP_PATH"
+fi
 
 mkdir -p "$OUTPUT_DIR"
 rm -f "$PKG_PATH"
@@ -85,7 +95,8 @@ if [[ "${NOTARIZE:-0}" == "1" ]]; then
   xcrun stapler staple "$PKG_PATH"
 fi
 
-REQUIRE_SIGNED="${REQUIRE_SIGNED:-0}" REQUIRE_NOTARIZED="${NOTARIZE:-0}" \
+EXPECTED_VERSION="$VERSION" REQUIRE_SIGNED="${REQUIRE_SIGNED:-0}" \
+  REQUIRE_NOTARIZED="${NOTARIZE:-0}" ALLOW_ADHOC="$ALLOW_ADHOC" \
   "${ROOT_DIR}/scripts/verify-pkg.sh" "$PKG_PATH"
 shasum -a 256 "$PKG_PATH" > "${PKG_PATH}.sha256"
 printf '%s\n' "$PKG_PATH"

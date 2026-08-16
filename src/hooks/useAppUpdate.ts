@@ -15,10 +15,10 @@ export function readAutoUpdatePreference(): boolean {
 }
 
 /**
- * One-shot GitHub release check on launch. When a newer version exists, the
- * auto-update preference decides between an immediate silent install and a
- * prompt. Check failures are swallowed: an offline launch must never block
- * the workspace.
+ * GitHub stable-release checks on launch and every 24 hours. When a newer
+ * version exists, the auto-update preference decides between an immediate
+ * verified install and a prompt. Check failures are swallowed: an offline
+ * check must never block the workspace.
  */
 export function useAppUpdate() {
   const [status, setStatus] = useState<AppUpdateStatus | null>(null);
@@ -53,18 +53,27 @@ export function useAppUpdate() {
     if (started.current) return;
     started.current = true;
     let cancelled = false;
-    void checkAppUpdate()
-      .then((result) => {
+    let checking = false;
+    const check = async (): Promise<void> => {
+      if (checking) return;
+      checking = true;
+      try {
+        const result = await checkAppUpdate();
         if (cancelled || !result.updateAvailable) return;
         setStatus(result);
         if (readAutoUpdatePreference()) void install();
         else setPhase("prompt");
-      })
-      .catch(() => {
-        // Best-effort check; never interrupt boot.
-      });
+      } catch {
+        // Best-effort check; never interrupt terminal work.
+      } finally {
+        checking = false;
+      }
+    };
+    void check();
+    const interval = window.setInterval(() => void check(), 24 * 60 * 60 * 1000);
     return () => {
       cancelled = true;
+      window.clearInterval(interval);
     };
   }, [install]);
 

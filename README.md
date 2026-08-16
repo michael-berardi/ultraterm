@@ -44,11 +44,17 @@ updates automatically" in the update prompt to skip the prompt entirely.
 ## Privacy
 
 On first launch UltraTerm asks whether you want to share anonymous usage
-stats. When enabled it sends only the app version, OS and architecture, and
-terminal counts — a launch ping plus at most one heartbeat per day — to
-analytics.libertydesign.studio. It never sends names, file paths, prompts, or
-terminal content. The choice can be changed anytime under Settings → Privacy;
-declining disables all telemetry traffic.
+stats. Before opt-in it creates no telemetry identifier and sends no network
+traffic. When enabled it sends a random install ID, app version, platform,
+architecture, UTC day, and coarse daily counters for successful terminal pane
+starts and OMP session starts to
+`https://analytics.libertydesign.studio/api/app-telemetry/event`: one launch,
+at most one heartbeat per UTC day, and at most one usage report per UTC day.
+It never sends names, file paths, prompts, terminal content, model or token
+data, commands, URLs, network identifiers, or secrets. The choice can be
+changed anytime under Settings → Privacy; declining persists and erases the
+local telemetry ID, send timestamps, pending counters, and legacy app
+telemetry state.
 
 ## Development
 

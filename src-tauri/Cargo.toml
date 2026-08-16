@@ -1,6 +1,6 @@
 [package]
 name = "ultraterm"
-version = "0.3.4"
+version = "0.3.5"
 description = "A unified liquid-glass OMP terminal workspace."
 authors = ["Liberty Design Studio"]
 edition = "2021"
@@ -30,7 +30,7 @@ base64 = "0.22.1"
 uuid = { version = "1.24.0", features = ["v4"] }
 sysinfo = "0.39.6"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-tokio = { version = "1", features = ["net", "io-util", "time", "process", "rt"] }
+tokio = { version = "1", features = ["net", "io-util", "time", "process", "rt", "sync"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 keyring = { version = "3", default-features = false, features = ["apple-native"] }
 

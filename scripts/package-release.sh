@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export PATH="${HOME}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
+export PATH="${HOME}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PRODUCT="UltraTerm"
@@ -59,13 +59,15 @@ rm -f "$VERSIONED_PKG" "${VERSIONED_PKG}.sha256" \
   "$STABLE_PKG" "${STABLE_PKG}.sha256" \
   "$ARCHIVE_PATH" "${ARCHIVE_PATH}.sha256"
 if [[ "$SIGNED_RELEASE" == "1" ]]; then
-  SKIP_BUILD=1 OUTPUT_DIR="$OUTPUT_DIR" REQUIRE_SIGNED=1 NOTARIZE=1 \
+  SKIP_BUILD=1 OUTPUT_DIR="$OUTPUT_DIR" EXPECTED_VERSION="$VERSION" \
+    REQUIRE_SIGNED=1 NOTARIZE=1 ALLOW_ADHOC="$ALLOW_ADHOC" \
     APPLE_SIGNING_IDENTITY="$APPLE_SIGNING_IDENTITY" \
     APPLE_INSTALLER_SIGNING_IDENTITY="$APPLE_INSTALLER_SIGNING_IDENTITY" \
     NOTARYTOOL_PROFILE="$NOTARYTOOL_PROFILE" \
     "${ROOT_DIR}/scripts/build-pkg.sh"
 else
-  SKIP_BUILD=1 OUTPUT_DIR="$OUTPUT_DIR" "${ROOT_DIR}/scripts/build-pkg.sh"
+  SKIP_BUILD=1 OUTPUT_DIR="$OUTPUT_DIR" EXPECTED_VERSION="$VERSION" \
+    ALLOW_ADHOC="$ALLOW_ADHOC" "${ROOT_DIR}/scripts/build-pkg.sh"
 fi
 
 mv "$VERSIONED_PKG" "$STABLE_PKG"
@@ -76,16 +78,28 @@ trap 'rm -rf "$STAGING_DIR"' EXIT
 PAYLOAD_DIR="${STAGING_DIR}/${PAYLOAD_NAME}"
 mkdir -p "$PAYLOAD_DIR"
 ditto "$APP_PATH" "${PAYLOAD_DIR}/${PRODUCT}.app"
-
+if [[ "$ALLOW_ADHOC" == "1" ]]; then
+  EXPECTED_VERSION="$VERSION" \
+    "${ROOT_DIR}/scripts/verify-app-identity.sh" --allow-adhoc "${PAYLOAD_DIR}/${PRODUCT}.app"
+else
+  EXPECTED_VERSION="$VERSION" \
+    "${ROOT_DIR}/scripts/verify-app-identity.sh" "${PAYLOAD_DIR}/${PRODUCT}.app"
+fi
 ditto -c -k --sequesterRsrc --keepParent "$PAYLOAD_DIR" "$ARCHIVE_PATH"
 if [[ "$SIGNED_RELEASE" == "1" ]]; then
   xcrun notarytool submit "$ARCHIVE_PATH" --keychain-profile "$NOTARYTOOL_PROFILE" --wait
   xcrun stapler staple "${PAYLOAD_DIR}/${PRODUCT}.app"
+  xcrun stapler validate "${PAYLOAD_DIR}/${PRODUCT}.app"
   rm -f "$ARCHIVE_PATH"
   ditto -c -k --sequesterRsrc --keepParent "$PAYLOAD_DIR" "$ARCHIVE_PATH"
 fi
-
-codesign --verify --deep --strict "${PAYLOAD_DIR}/${PRODUCT}.app"
+if [[ "$ALLOW_ADHOC" == "1" ]]; then
+  EXPECTED_VERSION="$VERSION" \
+    "${ROOT_DIR}/scripts/verify-app-identity.sh" --allow-adhoc "${PAYLOAD_DIR}/${PRODUCT}.app"
+else
+  EXPECTED_VERSION="$VERSION" \
+    "${ROOT_DIR}/scripts/verify-app-identity.sh" "${PAYLOAD_DIR}/${PRODUCT}.app"
+fi
 (
   cd "$OUTPUT_DIR"
   shasum -a 256 "$(basename "$STABLE_PKG")" > "$(basename "$STABLE_PKG").sha256"

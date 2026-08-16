@@ -16,6 +16,8 @@ const SECONDS_PER_DAY: i64 = 24 * 60 * 60;
 const REGISTRY_DIRECTORY: &str = ".ultraterm";
 const REGISTRY_FILE: &str = "telemetry-sessions.json";
 const TELEMETRY_INDEX_FILE: &str = "telemetry.sqlite3";
+const OVERSEER_USAGE_DIRECTORY: &str = ".overseer/usage";
+const USAGE_ARTIFACT_VERSION: u64 = 1;
 const UNKNOWN_MODEL: &str = "unknown";
 const ULTRATERM_SESSION_PREFIX: &str = "ultraterm-matrix-";
 
@@ -125,6 +127,16 @@ struct FileUsage {
     exited: bool,
     assistant_records: usize,
     model: Option<String>,
+    artifact_session_id: Option<String>,
+}
+
+#[derive(Clone)]
+struct ParsedAssistantRecord {
+    identity: Option<String>,
+    timestamp: Option<i64>,
+    model: Option<String>,
+    provider: Option<String>,
+    counts: Option<TokenCounts>,
 }
 
 struct AggregatedUsage {
@@ -149,8 +161,8 @@ enum TokenChannel {
 }
 
 fn token_channel(provider: Option<&str>, model: Option<&str>) -> TokenChannel {
-    let provider = provider.unwrap_or_default().to_ascii_lowercase();
-    let model = model.unwrap_or_default().to_ascii_lowercase();
+    let provider = canonical_provider_name(provider.unwrap_or_default()).to_ascii_lowercase();
+    let model = canonical_model_name(model.unwrap_or_default()).to_ascii_lowercase();
     if model.ends_with(":free") {
         return TokenChannel::Subscription;
     }
@@ -182,13 +194,29 @@ fn token_channel(provider: Option<&str>, model: Option<&str>) -> TokenChannel {
     }
 }
 
+fn canonical_model_name(raw: &str) -> String {
+    let model = raw.trim().strip_prefix('~').unwrap_or(raw.trim());
+    if let Some(model) = model.strip_prefix("openrouter.ai/") {
+        return format!("openrouter/{model}");
+    }
+    model.to_string()
+}
+
+fn canonical_provider_name(raw: &str) -> String {
+    let provider = raw.trim();
+    if provider.eq_ignore_ascii_case("openrouter.ai") {
+        return "openrouter".to_string();
+    }
+    provider.to_string()
+}
+
 fn model_price<'a>(
     pricing: &'a HashMap<String, ModelPrice>,
     model: Option<&str>,
 ) -> Option<&'a ModelPrice> {
-    let model = model?.trim_start_matches('~');
+    let model = canonical_model_name(model?);
     pricing
-        .get(model)
+        .get(&model)
         .or_else(|| model.rsplit('/').next().and_then(|name| pricing.get(name)))
 }
 
@@ -206,6 +234,26 @@ fn add_channel_usage(
             }
         }
     }
+}
+
+fn deduplicated_file_usages<'a>(
+    file_cache: &'a HashMap<PathBuf, CachedFileUsage>,
+) -> Vec<&'a FileUsage> {
+    let mut entries: Vec<_> = file_cache.iter().collect();
+    entries.sort_by(|left, right| left.0.cmp(right.0));
+    let mut sessions = HashSet::new();
+    entries
+        .into_iter()
+        .filter_map(|(_, cached)| {
+            cached
+                .usage
+                .artifact_session_id
+                .as_ref()
+                .map_or(Some(&cached.usage), |session_id| {
+                    sessions.insert(session_id.clone()).then_some(&cached.usage)
+                })
+        })
+        .collect()
 }
 
 fn aggregate_usage<'a>(
@@ -248,7 +296,8 @@ fn aggregate_usage<'a>(
                 .entry(
                     record
                         .model
-                        .clone()
+                        .as_deref()
+                        .map(canonical_model_name)
                         .unwrap_or_else(|| UNKNOWN_MODEL.to_string()),
                 )
                 .or_default()
@@ -364,6 +413,7 @@ impl TokenTelemetryManager {
         for session_path in &self.registered_sessions {
             collect_session_files(session_path, &mut files);
         }
+        collect_usage_artifacts(home, &mut files);
         self.refresh_files(home, &files)?;
         self.refresh_model_pricing(home);
 
@@ -372,7 +422,7 @@ impl TokenTelemetryManager {
             .unwrap_or_default()
             .as_secs() as i64;
         let aggregate = aggregate_usage(
-            self.file_cache.values().map(|cached| &cached.usage),
+            deduplicated_file_usages(&self.file_cache).into_iter(),
             &self.pricing,
             now,
         );
@@ -517,7 +567,12 @@ impl TokenTelemetryManager {
             if unchanged {
                 continue;
             }
-            if let Ok(usage) = parse_usage_file(path) {
+            let parsed = if is_usage_artifact_path(home, path) {
+                parse_usage_artifact(path)
+            } else {
+                parse_usage_file(path)
+            };
+            if let Ok(usage) = parsed {
                 changed.push((
                     path.clone(),
                     CachedFileUsage {
@@ -717,7 +772,7 @@ fn load_cached_model_pricing(path: &Path) -> Result<HashMap<String, CachedModelP
                 },
                 updated_at,
             };
-            let id = id.trim_start_matches('~').to_string();
+            let id = canonical_model_name(id);
             let short = id.rsplit('/').next().map(str::to_string);
             insert_freshest_model_price(&mut pricing, id, cached);
             if let Some(short) = short {
@@ -762,7 +817,8 @@ fn open_telemetry_index(home: &Path) -> Result<Connection, String> {
                  total INTEGER NOT NULL,
                  exited INTEGER NOT NULL,
                  assistant_records INTEGER NOT NULL,
-                 model TEXT
+                 model TEXT,
+                 source_session_id TEXT
              );
              CREATE TABLE IF NOT EXISTS telemetry_records (
                  file_path TEXT NOT NULL,
@@ -813,8 +869,31 @@ fn open_telemetry_index(home: &Path) -> Result<Connection, String> {
                 )
             })?;
     }
+    let has_source_session_id = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('telemetry_files') WHERE name = 'source_session_id'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| {
+            format!(
+                "Failed to inspect token telemetry index {}: {error}",
+                path.display()
+            )
+        })?
+        > 0;
+    if !has_source_session_id {
+        connection
+            .execute_batch("ALTER TABLE telemetry_files ADD COLUMN source_session_id TEXT;")
+            .map_err(|error| {
+                format!(
+                    "Failed to migrate token telemetry index {}: {error}",
+                    path.display()
+                )
+            })?;
+    }
     connection
-        .pragma_update(None, "user_version", 2_i64)
+        .pragma_update(None, "user_version", 3_i64)
         .map_err(|error| {
             format!(
                 "Failed to version token telemetry index {}: {error}",
@@ -853,7 +932,7 @@ fn load_file_usage_index(home: &Path) -> Result<HashMap<PathBuf, CachedFileUsage
             .prepare(
                 "SELECT path, length, modified_ns, total_input, total_output,
                         total_cache_read, total_cache_write, total, exited,
-                        assistant_records, model
+                        assistant_records, model, source_session_id
                  FROM telemetry_files",
             )
             .map_err(|error| {
@@ -864,13 +943,13 @@ fn load_file_usage_index(home: &Path) -> Result<HashMap<PathBuf, CachedFileUsage
             })?;
         let rows = statement
             .query_map([], |row| {
-                let path: String = row.get(0)?;
+                let file_path = PathBuf::from(row.get::<_, String>(0)?);
                 let length: i64 = row.get(1)?;
                 let modified_ns: Option<i64> = row.get(2)?;
                 let exited: i64 = row.get(8)?;
                 let assistant_records: i64 = row.get(9)?;
                 Ok((
-                    PathBuf::from(path),
+                    file_path,
                     CachedFileUsage {
                         length: stored_u64(length),
                         modified: modified_time_from_nanos(modified_ns),
@@ -887,6 +966,7 @@ fn load_file_usage_index(home: &Path) -> Result<HashMap<PathBuf, CachedFileUsage
                             assistant_records: usize::try_from(assistant_records)
                                 .unwrap_or_default(),
                             model: row.get(10)?,
+                            artifact_session_id: row.get(11)?,
                         },
                     },
                 ))
@@ -981,8 +1061,8 @@ fn persist_file_usage_index(
                 "INSERT INTO telemetry_files (
                      path, length, modified_ns, total_input, total_output,
                      total_cache_read, total_cache_write, total, exited,
-                     assistant_records, model
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                     assistant_records, model, source_session_id
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
                  ON CONFLICT(path) DO UPDATE SET
                      length = excluded.length,
                      modified_ns = excluded.modified_ns,
@@ -993,7 +1073,8 @@ fn persist_file_usage_index(
                      total = excluded.total,
                      exited = excluded.exited,
                      assistant_records = excluded.assistant_records,
-                     model = excluded.model",
+                     model = excluded.model,
+                     source_session_id = excluded.source_session_id",
             )
             .map_err(|error| {
                 format!(
@@ -1038,6 +1119,7 @@ fn persist_file_usage_index(
                     if cached.usage.exited { 1_i64 } else { 0_i64 },
                     i64::try_from(cached.usage.assistant_records).unwrap_or(i64::MAX),
                     cached.usage.model.as_deref(),
+                    cached.usage.artifact_session_id.as_deref(),
                 ])
                 .map_err(|error| {
                     format!(
@@ -1177,6 +1259,38 @@ fn collect_telemetry_files(directory: &Path, files: &mut HashSet<PathBuf>) {
     }
 }
 
+fn overseer_usage_directory(home: &Path) -> PathBuf {
+    home.join(OVERSEER_USAGE_DIRECTORY)
+}
+
+fn is_usage_artifact_path(home: &Path, path: &Path) -> bool {
+    path.starts_with(overseer_usage_directory(home))
+        && path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+}
+
+fn collect_usage_artifacts(home: &Path, files: &mut HashSet<PathBuf>) {
+    fn visit(directory: &Path, files: &mut HashSet<PathBuf>) {
+        let Ok(entries) = fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                visit(&path, files);
+            } else if path
+                .extension()
+                .is_some_and(|extension| extension == "json")
+            {
+                files.insert(path);
+            }
+        }
+    }
+
+    visit(&overseer_usage_directory(home), files);
+}
+
 fn is_omp_event_stream(path: &Path) -> bool {
     let Ok(file) = File::open(path) else {
         return false;
@@ -1190,6 +1304,28 @@ fn is_omp_event_stream(path: &Path) -> bool {
     })
 }
 
+fn usage_identity(value: &Value, message: &Value) -> Option<String> {
+    const ID_KEYS: [&str; 7] = [
+        "messageId",
+        "message_id",
+        "id",
+        "turnId",
+        "turn_id",
+        "eventId",
+        "event_id",
+    ];
+    [message, value].into_iter().find_map(|record| {
+        ID_KEYS.iter().find_map(|key| {
+            let identity = record.get(key)?;
+            let identity = identity
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| identity.as_u64().map(|value| value.to_string()))?;
+            (!identity.is_empty()).then_some(identity)
+        })
+    })
+}
+
 fn parse_usage_file(path: &Path) -> Result<FileUsage, String> {
     let file = File::open(path).map_err(|error| {
         format!(
@@ -1198,6 +1334,7 @@ fn parse_usage_file(path: &Path) -> Result<FileUsage, String> {
         )
     })?;
     let mut usage = FileUsage::default();
+    let mut records = Vec::new();
 
     for line in BufReader::new(file).lines().map_while(Result::ok) {
         let Ok(value) = serde_json::from_str::<Value>(&line) else {
@@ -1208,7 +1345,7 @@ fn parse_usage_file(path: &Path) -> Result<FileUsage, String> {
             .and_then(Value::as_str)
             .is_some_and(|kind| kind == "session_exit");
         if let Some(model) = value.get("model").and_then(Value::as_str) {
-            usage.model = Some(model.to_string());
+            usage.model = Some(canonical_model_name(model));
         }
 
         if !matches!(
@@ -1223,48 +1360,193 @@ fn parse_usage_file(path: &Path) -> Result<FileUsage, String> {
         if message.get("role").and_then(Value::as_str) != Some("assistant") {
             continue;
         }
-        usage.assistant_records = usage.assistant_records.saturating_add(1);
         if let Some(model) = message.get("model").and_then(Value::as_str) {
-            usage.model = Some(model.to_string());
+            usage.model = Some(canonical_model_name(model));
         }
-        let Some(raw_usage) = message.get("usage") else {
-            continue;
-        };
         let record_model = usage.model.clone();
         let record_provider = message
             .get("provider")
             .and_then(Value::as_str)
             .or_else(|| value.get("provider").and_then(Value::as_str))
-            .map(str::to_string);
-        let input = number(raw_usage, "input");
-        let output = number(raw_usage, "output");
-        let cache_read = number(raw_usage, "cacheRead");
-        let cache_write = number(raw_usage, "cacheWrite");
-        let fresh_total = input.saturating_add(output).saturating_add(cache_write);
-        let counts = TokenCounts {
-            input,
-            output,
-            cache_read,
-            cache_write,
-            total: if fresh_total == 0 {
-                number(raw_usage, "totalTokens")
-            } else {
-                fresh_total
-            },
+            .map(canonical_provider_name);
+        let counts = message.get("usage").map(|raw_usage| {
+            let input = number(raw_usage, "input");
+            let output = number(raw_usage, "output");
+            let cache_read = number(raw_usage, "cacheRead");
+            let cache_write = number(raw_usage, "cacheWrite");
+            let fresh_total = input.saturating_add(output).saturating_add(cache_write);
+            TokenCounts {
+                input,
+                output,
+                cache_read,
+                cache_write,
+                total: if fresh_total == 0 {
+                    number(raw_usage, "totalTokens")
+                } else {
+                    fresh_total
+                },
+            }
+        });
+        let timestamp = timestamp_seconds(value.get("timestamp").and_then(Value::as_str))
+            .or_else(|| json_timestamp_seconds(message.get("timestamp")));
+        records.push(ParsedAssistantRecord {
+            identity: usage_identity(&value, message),
+            timestamp,
+            model: record_model,
+            provider: record_provider,
+            counts,
+        });
+    }
+
+    let mut identities = HashMap::new();
+    let mut unique_records = Vec::with_capacity(records.len());
+    for record in records {
+        if let Some(identity) = record.identity.clone() {
+            if let Some(index) = identities.get(&identity).copied() {
+                unique_records[index] = record;
+                continue;
+            }
+            identities.insert(identity, unique_records.len());
+        }
+        unique_records.push(record);
+    }
+    usage.assistant_records = unique_records.len();
+    for record in unique_records {
+        let Some(counts) = record.counts else {
+            continue;
         };
         usage.total.add(&counts);
-        if let Some(timestamp) = timestamp_seconds(value.get("timestamp").and_then(Value::as_str))
-            .or_else(|| json_timestamp_seconds(message.get("timestamp")))
-        {
+        if let Some(timestamp) = record.timestamp {
             usage.timed.push(TimedUsage {
                 timestamp,
-                model: record_model,
-                provider: record_provider,
+                model: record.model,
+                provider: record.provider,
                 counts,
             });
         }
     }
     Ok(usage)
+}
+
+fn parse_usage_artifact(path: &Path) -> Result<FileUsage, String> {
+    let content = fs::read_to_string(path).map_err(|error| {
+        format!(
+            "Failed to read Overseer token usage artifact {}: {error}",
+            path.display()
+        )
+    })?;
+    let value: Value = serde_json::from_str(&content).map_err(|error| {
+        format!(
+            "Failed to parse Overseer token usage artifact {}: {error}",
+            path.display()
+        )
+    })?;
+    let object = value.as_object().ok_or_else(|| {
+        format!(
+            "Overseer token usage artifact {} must be a JSON object",
+            path.display()
+        )
+    })?;
+    const ALLOWED_KEYS: [&str; 12] = [
+        "version",
+        "session_id",
+        "started_at",
+        "completed_at",
+        "model",
+        "provider",
+        "run_mode",
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "reasoning_tokens",
+    ];
+    if object
+        .keys()
+        .any(|key| !ALLOWED_KEYS.contains(&key.as_str()))
+    {
+        return Err(format!(
+            "Overseer token usage artifact {} contains an unknown field",
+            path.display()
+        ));
+    }
+    if object.len() != ALLOWED_KEYS.len() {
+        return Err(format!(
+            "Overseer token usage artifact {} is incomplete",
+            path.display()
+        ));
+    }
+    if object.get("version").and_then(Value::as_u64) != Some(USAGE_ARTIFACT_VERSION) {
+        return Err(format!(
+            "Unsupported Overseer token usage artifact version in {}",
+            path.display()
+        ));
+    }
+    let session_id = object
+        .get("session_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("Invalid session_id in {}", path.display()))?
+        .to_string();
+    let started_at = object
+        .get("started_at")
+        .and_then(Value::as_u64)
+        .and_then(|value| i64::try_from(value).ok())
+        .ok_or_else(|| format!("Invalid started_at in {}", path.display()))?;
+    let completed_at = object
+        .get("completed_at")
+        .and_then(Value::as_u64)
+        .and_then(|value| i64::try_from(value).ok())
+        .ok_or_else(|| format!("Invalid completed_at in {}", path.display()))?;
+    let model = object
+        .get("model")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(canonical_model_name)
+        .ok_or_else(|| format!("Invalid model in {}", path.display()))?;
+    let provider = object
+        .get("provider")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(canonical_provider_name)
+        .ok_or_else(|| format!("Invalid provider in {}", path.display()))?;
+    object
+        .get("run_mode")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("Invalid run_mode in {}", path.display()))?;
+    let artifact_number = |key: &str| {
+        object
+            .get(key)
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("Invalid {key} in {}", path.display()))
+    };
+    let input = artifact_number("input_tokens")?;
+    let output = artifact_number("output_tokens")?;
+    let cache_read = artifact_number("cache_read_tokens")?;
+    let cache_write = artifact_number("cache_write_tokens")?;
+    let _reasoning = artifact_number("reasoning_tokens")?;
+    let total = input.saturating_add(output).saturating_add(cache_write);
+    let counts = TokenCounts {
+        input,
+        output,
+        cache_read,
+        cache_write,
+        total,
+    };
+    Ok(FileUsage {
+        total: counts.clone(),
+        timed: vec![TimedUsage {
+            timestamp: completed_at.max(started_at),
+            model: Some(model.clone()),
+            provider: Some(provider),
+            counts,
+        }],
+        exited: true,
+        assistant_records: 1,
+        model: Some(model),
+        artifact_session_id: Some(session_id),
+    })
 }
 
 fn number(value: &Value, key: &str) -> u64 {
@@ -1316,7 +1598,6 @@ fn session_title(path: &Path) -> Option<String> {
     let title = value.get("title").and_then(Value::as_str)?.trim();
     (!title.is_empty()).then(|| title.to_string())
 }
-
 fn is_counted_subagent(path: &Path) -> bool {
     path.extension()
         .is_some_and(|extension| extension == "jsonl")
@@ -1378,10 +1659,8 @@ mod tests {
 
     #[test]
     fn reads_title_record_from_session_transcript() {
-        let root = std::env::temp_dir().join(format!(
-            "ultraterm-session-title-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("ultraterm-session-title-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("session.jsonl");
         fs::write(
@@ -1728,7 +2007,7 @@ mod tests {
         assert_eq!(usage.timed[0].provider.as_deref(), Some("openrouter"));
         assert_eq!(
             usage.timed[0].model.as_deref(),
-            Some("~deepseek/deepseek-v4-flash-latest")
+            Some("deepseek/deepseek-v4-flash-latest")
         );
         assert!(matches!(
             token_channel(
@@ -1737,6 +2016,164 @@ mod tests {
             ),
             TokenChannel::PaidApi
         ));
+    }
+
+    #[test]
+    fn message_and_message_end_with_same_identity_count_once() {
+        let root = tempdir().unwrap();
+        let transcript = root.path().join("identity.jsonl");
+        fs::write(
+            &transcript,
+            concat!(
+                "{\"type\":\"message\",\"timestamp\":\"2026-07-18T12:00:00Z\",\"message\":{\"id\":\"turn-1\",\"role\":\"assistant\",\"usage\":{\"input\":2,\"output\":1,\"cacheRead\":5,\"cacheWrite\":1}}}\n",
+                "{\"type\":\"message_end\",\"timestamp\":\"2026-07-18T12:00:01Z\",\"message\":{\"id\":\"turn-1\",\"role\":\"assistant\",\"usage\":{\"input\":10,\"output\":4,\"cacheRead\":50,\"cacheWrite\":2}}}\n"
+            ),
+        )
+        .unwrap();
+
+        let usage = parse_usage_file(&transcript).unwrap();
+
+        assert_eq!(usage.assistant_records, 1);
+        assert_eq!(usage.total.input, 10);
+        assert_eq!(usage.total.output, 4);
+        assert_eq!(usage.total.cache_read, 50);
+        assert_eq!(usage.total.cache_write, 2);
+        assert_eq!(usage.total.total, 16);
+        assert_eq!(usage.timed.len(), 1);
+    }
+
+    #[test]
+    fn repeated_usage_identity_aliases_keep_only_the_final_record() {
+        let root = tempdir().unwrap();
+        let transcript = root.path().join("identity-aliases.jsonl");
+        fs::write(
+            &transcript,
+            concat!(
+                "{\"type\":\"message\",\"message\":{\"messageId\":\"turn-1\",\"role\":\"assistant\",\"usage\":{\"input\":2,\"output\":1}}}\n",
+                "{\"type\":\"message_end\",\"message\":{\"id\":\"turn-1\",\"role\":\"assistant\",\"usage\":{\"input\":10,\"output\":4}}}\n",
+                "{\"type\":\"message_end\",\"message\":{\"turnId\":\"turn-1\",\"role\":\"assistant\",\"usage\":{\"input\":20,\"output\":5}}}\n"
+            ),
+        )
+        .unwrap();
+
+        let usage = parse_usage_file(&transcript).unwrap();
+
+        assert_eq!(usage.assistant_records, 1);
+        assert_eq!(usage.total.input, 20);
+        assert_eq!(usage.total.output, 5);
+        assert_eq!(usage.total.total, 25);
+    }
+
+    #[test]
+    fn canonicalizes_only_known_model_provider_syntax_aliases() {
+        assert_eq!(
+            canonical_model_name("~openrouter.ai/deepseek/deepseek-v4"),
+            "openrouter/deepseek/deepseek-v4"
+        );
+        assert_eq!(canonical_provider_name("OpenRouter.AI"), "openrouter");
+        assert_ne!(
+            canonical_model_name("kimi-code/k3"),
+            canonical_model_name("kimi-coding/k3")
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_partial_and_unknown_usage_artifacts() {
+        let root = tempdir().unwrap();
+        let partial = root.path().join("partial.json");
+        fs::write(&partial, "{\"version\":1,\"session_id\":\"partial\"}").unwrap();
+        assert!(parse_usage_artifact(&partial).is_err());
+
+        let unknown = root.path().join("unknown.json");
+        let mut value = serde_json::json!({
+            "version": 1,
+            "session_id": "unknown",
+            "started_at": 1,
+            "completed_at": 2,
+            "model": "kimi-code/k3",
+            "provider": "kimi-code",
+            "run_mode": "quiet",
+            "input_tokens": 1,
+            "output_tokens": 2,
+            "cache_read_tokens": 3,
+            "cache_write_tokens": 4,
+            "reasoning_tokens": 5
+        });
+        value["prompt"] = Value::String("must not be captured".to_string());
+        fs::write(&unknown, serde_json::to_string(&value).unwrap()).unwrap();
+        assert!(parse_usage_artifact(&unknown).is_err());
+    }
+
+    #[test]
+    fn parent_native_child_and_external_artifacts_count_once() {
+        let root = tempdir().unwrap();
+        let parent = root.path().join("parent.jsonl");
+        let child_directory = parent.with_extension("");
+        fs::create_dir_all(&child_directory).unwrap();
+        fs::write(
+            &parent,
+            "{\"type\":\"message\",\"timestamp\":\"2026-07-18T12:00:00Z\",\"message\":{\"role\":\"assistant\",\"usage\":{\"input\":2,\"output\":2,\"cacheWrite\":1}}}\n",
+        )
+        .unwrap();
+        let child = child_directory.join("worker.jsonl");
+        fs::write(
+            &child,
+            "{\"type\":\"message\",\"timestamp\":\"2026-07-18T12:01:00Z\",\"message\":{\"role\":\"assistant\",\"usage\":{\"input\":1,\"output\":1,\"cacheWrite\":1}}}\n",
+        )
+        .unwrap();
+
+        let usage_directory = root.path().join(".overseer/usage");
+        fs::create_dir_all(&usage_directory).unwrap();
+        let artifact = serde_json::json!({
+            "version": 1,
+            "session_id": "external-session",
+            "started_at": 1784376000_u64,
+            "completed_at": 1784376001_u64,
+            "model": "~openrouter.ai/deepseek/deepseek-v4",
+            "provider": "openrouter.ai",
+            "run_mode": "quiet",
+            "input_tokens": 4,
+            "output_tokens": 3,
+            "cache_read_tokens": 100,
+            "cache_write_tokens": 1,
+            "reasoning_tokens": 2
+        });
+        let artifact_path = usage_directory.join("external.json");
+        fs::write(&artifact_path, serde_json::to_string(&artifact).unwrap()).unwrap();
+        let duplicate_path = usage_directory.join("duplicate.json");
+        fs::write(&duplicate_path, serde_json::to_string(&artifact).unwrap()).unwrap();
+
+        let mut files = HashSet::new();
+        collect_session_files(&parent, &mut files);
+        collect_usage_artifacts(root.path(), &mut files);
+        let mut cache = HashMap::new();
+        for path in &files {
+            let usage = if is_usage_artifact_path(root.path(), path) {
+                parse_usage_artifact(path).unwrap()
+            } else {
+                parse_usage_file(path).unwrap()
+            };
+            cache.insert(
+                path.clone(),
+                CachedFileUsage {
+                    length: fs::metadata(path).unwrap().len(),
+                    modified: fs::metadata(path).unwrap().modified().ok(),
+                    usage,
+                },
+            );
+        }
+
+        let aggregate = aggregate_usage(
+            deduplicated_file_usages(&cache).into_iter(),
+            &HashMap::new(),
+            1_784_376_100,
+        );
+        assert_eq!(files.len(), 4);
+        assert_eq!(aggregate.all_time.input, 7);
+        assert_eq!(aggregate.all_time.output, 6);
+        assert_eq!(aggregate.all_time.cache_read, 100);
+        assert_eq!(aggregate.all_time.cache_write, 3);
+        assert_eq!(aggregate.all_time.total, 16);
     }
 
     #[test]
