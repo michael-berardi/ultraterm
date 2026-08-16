@@ -2,17 +2,15 @@ import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import {
   Check,
-  CircleOff,
-  Focus,
   KeyRound,
   Palette,
-  Sparkles,
+  ShieldCheck,
   TerminalSquare,
   X,
 } from "lucide-react";
 import { IntegrationsSettings } from "./IntegrationsSettings";
 import type {
-  EffectMode,
+  AppTelemetryConsent,
   ProviderUsagePreferences,
   TerminalCursorStyle,
   TerminalPreferences,
@@ -27,17 +25,6 @@ const THEMES: Array<{ id: ThemeId; name: string; detail: string }> = [
   { id: "ember", name: "Ember", detail: "Warm carbon · quiet radiance" },
 ];
 
-const EFFECTS: Array<{
-  id: EffectMode;
-  name: string;
-  detail: string;
-  icon: typeof Sparkles;
-}> = [
-  { id: "off", name: "Still", detail: "Pure black canvas · zero motion", icon: CircleOff },
-  { id: "focus", name: "Focus", detail: "A crisp light ring marks the active terminal", icon: Focus },
-  { id: "spectrum", name: "Spectrum", detail: "A slow prismatic glow drifts behind the workspace", icon: Sparkles },
-];
-
 const FONT_SIZES = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18] as const;
 const CURSOR_STYLES: Array<{
   id: TerminalCursorStyle;
@@ -48,34 +35,34 @@ const CURSOR_STYLES: Array<{
   { id: "underline", name: "Underline" },
 ];
 
-export type SettingsSection = "appearance" | "terminal" | "integrations";
+export type SettingsSection = "appearance" | "terminal" | "integrations" | "privacy";
 
 interface SettingsModalProps {
   open: boolean;
   theme: ThemeId;
-  effectMode: EffectMode;
   terminalPreferences: TerminalPreferences;
   providerUsagePreferences: ProviderUsagePreferences;
+  telemetryConsent: AppTelemetryConsent;
   /** When set, the modal jumps to this section the next time it opens. */
   initialSection?: SettingsSection;
   onThemeChange: (theme: ThemeId) => void;
-  onEffectModeChange: (mode: EffectMode) => void;
   onTerminalPreferencesChange: (preferences: TerminalPreferences) => void;
   onProviderUsagePreferencesChange: (preferences: ProviderUsagePreferences) => void;
+  onTelemetryConsentChange: (enabled: boolean) => void;
   onClose: () => void;
 }
 
 export function SettingsModal({
   open,
   theme,
-  effectMode,
   terminalPreferences,
   providerUsagePreferences,
+  telemetryConsent,
   initialSection,
   onThemeChange,
-  onEffectModeChange,
   onTerminalPreferencesChange,
   onProviderUsagePreferencesChange,
+  onTelemetryConsentChange,
   onClose,
 }: SettingsModalProps) {
   const [activeSection, setActiveSection] = useState<SettingsSection>("appearance");
@@ -231,9 +218,57 @@ export function SettingsModal({
               <KeyRound size={15} aria-hidden="true" />
               Integrations
             </button>
+            <button
+              id="settings-tab-privacy"
+              type="button"
+              role="tab"
+              aria-selected={activeSection === "privacy"}
+              aria-controls="settings-panel-privacy"
+              tabIndex={activeSection === "privacy" ? 0 : -1}
+              onClick={() => setActiveSection("privacy")}
+              onKeyDown={handleSectionKeyDown}
+            >
+              <ShieldCheck size={15} aria-hidden="true" />
+              Privacy
+            </button>
           </nav>
 
-          {activeSection === "integrations" ? (
+          {activeSection === "privacy" ? (
+            <section
+              id="settings-panel-privacy"
+              className="settings-panel"
+              role="tabpanel"
+              aria-labelledby="settings-tab-privacy"
+              tabIndex={0}
+            >
+              <header className="settings-section-intro">
+                <h3>Privacy</h3>
+                <p>What UltraTerm shares, and what it never touches.</p>
+              </header>
+
+              <section className="settings-group" aria-labelledby="telemetry-heading">
+                <div>
+                  <h4 id="telemetry-heading">Anonymous usage stats</h4>
+                  <p>
+                    Sends only the app version, OS, and terminal counts to
+                    analytics.libertydesign.studio to help guide development. Never names,
+                    file paths, prompts, or terminal content.
+                  </p>
+                </div>
+                <label className="settings-toggle">
+                  <input
+                    type="checkbox"
+                    checked={telemetryConsent === "enabled"}
+                    onChange={(event) => onTelemetryConsentChange(event.target.checked)}
+                  />
+                  <span>
+                    <strong>Help improve UltraTerm</strong>
+                    <small>Anonymous and optional — a launch ping plus one heartbeat per day.</small>
+                  </span>
+                </label>
+              </section>
+            </section>
+          ) : activeSection === "integrations" ? (
             <section
               id="settings-panel-integrations"
               className="settings-panel"
@@ -281,36 +316,6 @@ export function SettingsModal({
                       {theme === option.id && <Check size={14} aria-hidden="true" />}
                     </button>
                   ))}
-                </div>
-              </section>
-
-              <section className="settings-group" aria-labelledby="atmosphere-heading">
-                <div>
-                  <h4 id="atmosphere-heading">Atmosphere</h4>
-                  <p>Motion stays peripheral and never crosses terminal text.</p>
-                </div>
-                <div className="settings-option-grid">
-                  {EFFECTS.map((option) => {
-                    const Icon = option.icon;
-                    return (
-                      <button
-                        key={option.id}
-                        type="button"
-                        className={`settings-choice${effectMode === option.id ? " is-selected" : ""}`}
-                        aria-pressed={effectMode === option.id}
-                        onClick={() => onEffectModeChange(option.id)}
-                      >
-                        <span className={`settings-choice__icon settings-choice__icon--${option.id}`}>
-                          <Icon size={15} aria-hidden="true" />
-                        </span>
-                        <span>
-                          <strong>{option.name}</strong>
-                          <small>{option.detail}</small>
-                        </span>
-                        {effectMode === option.id && <Check size={14} aria-hidden="true" />}
-                      </button>
-                    );
-                  })}
                 </div>
               </section>
             </section>

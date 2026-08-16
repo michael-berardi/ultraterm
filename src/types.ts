@@ -1,5 +1,4 @@
 export type ThemeId = "oled" | "white" | "aurora" | "titanium" | "ember";
-export type EffectMode = "off" | "focus" | "spectrum";
 export type TerminalCursorStyle = "bar" | "block" | "underline";
 
 export interface TerminalPreferences {
@@ -69,6 +68,12 @@ export interface AppUpdateStatus {
   latestVersion: string;
   updateAvailable: boolean;
   releaseUrl: string;
+}
+
+export type AppTelemetryConsent = "unset" | "enabled" | "disabled";
+
+export interface AppTelemetryState {
+  consent: AppTelemetryConsent;
 }
 
 /**

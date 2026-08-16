@@ -1,133 +1,97 @@
 # UltraTerm
 
-UltraTerm is a macOS desktop workspace for running multiple Oh My Pi (OMP) terminals inside one managed window. It combines a Rust/Tauri PTY backend with a React/xterm.js interface, a three-pane matrix layout, persistent tmux-backed sessions, UltraVox voice input, PS4 controller navigation, OLED-focused themes, and a high-contrast White theme.
+UltraTerm is a macOS desktop app that runs all of your Oh My Pi (OMP) agent
+terminals in one window. Sessions keep running when the app closes or updates
+and reconnect automatically when it opens again. It includes token-usage
+tracking with per-model history, UltraVox voice input, PS4 controller
+navigation, and a choice of OLED-first themes.
 
 ## Requirements
 
 - macOS on Apple Silicon
-- OMP available on `PATH` or configured with `OMP_BIN`
-- `tmux` is recommended for persistent sessions; UltraTerm falls back to a
-  direct OMP session when it is unavailable
+- OMP installed and on your `PATH`
+- `tmux` (recommended; required for sessions that survive app restarts)
 
-Node.js and Rust are required only when building from source.
-
-## Installation
-
-For an AI agent or a user account install (no compiler or `sudo` required):
+## Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/michael-berardi/ultraterm/main/install.sh | bash
 ```
 
-This installs the prebuilt app to `~/Applications/UltraTerm.app`. The resilient
-`omp-safe` launcher is bundled inside the app. For a machine-wide install:
+The installer downloads the signed, notarized release, verifies its checksum
+and code signature, and installs UltraTerm to `~/Applications`. Add
+`--system` for a machine-wide install in `/Applications`.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/michael-berardi/ultraterm/main/install.sh | bash -s -- --system
-```
+Then open UltraTerm like any other app. Each pane starts an OMP terminal in
+your home directory; use the profile picker next to "New terminal" to choose
+which OMP profile a pane launches with.
 
-The installer verifies the published SHA-256 checksum and macOS code signature.
-Release assets are also available from
-[GitHub Releases](https://github.com/michael-berardi/ultraterm/releases).
+## Updates
 
-## Resilient launcher
+UltraTerm checks for updates on every launch. When a new version is available
+you can update in one click — the app downloads the signed release, verifies
+it, and relaunches itself while your terminals keep running. Enable "Install
+updates automatically" in the update prompt to skip the prompt entirely.
 
-UltraTerm bundles the `scripts/omp-safe` launcher used for persistent
-tmux-backed OMP sessions. A source checkout can override it during development:
+## Controls
 
-```sh
-ULTRATERM_OMP_LAUNCHER=\"$PWD/scripts/omp-safe\" npm run tauri dev
-```
+- `⌘T` — new terminal
+- `⌘1`–`⌘9` — focus a pane
+- `Escape` — restore a maximized pane
+- Sidebar: token usage dials, per-terminal model and activity, token history
+  (click any model to filter), settings, and restart
 
-Each matrix slot receives its own `ultraterm-matrix-N` tmux session. The session survives app restarts, automatically resumes OMP after an unexpected process exit, and hides tmux's status bar inside UltraTerm.
+## Privacy
 
-`OMP_PROFILE` is optional. When it is unset or empty, the launcher omits `--profile` and OMP selects its normal default. To select a profile explicitly, set `OMP_PROFILE` before starting UltraTerm. OMP upgrades do not interrupt persistent-session reconnects. UltraTerm still refuses to attach to a session created with a different OMP binary path or profile; preserve that session under another name or stop it before changing configuration.
-
-### Configuration
-
-| Variable | Purpose |
-| --- | --- |
-| `ULTRATERM_OMP_LAUNCHER` | Executable path or command name for `omp-safe`; otherwise resolved from `ULTRATERM_PATH` or `PATH`. |
-| `ULTRATERM_PATH` | Optional command search path prepended to the inherited `PATH` for backend lookup and launched OMP sessions. |
-| `ULTRATERM_WORKING_DIRECTORY` | Default directory for new terminals. If unset, UltraTerm uses the user's home directory; an invalid configured path is rejected. |
-| `OMP_BIN` | Executable path or command name for OMP; otherwise `omp` is resolved from `PATH`. |
-| `OMP_PROFILE` | Optional OMP profile passed as `--profile`; unset uses OMP's default. |
-| `TMUX_BIN` | Executable path or command name for tmux; otherwise resolved from `PATH` with standard installation paths as fallbacks. |
-| `ULTRAVOX_VOICE_SOCKET` | Optional shared Unix socket path for UltraVox voice input; both apps must inherit the same value. |
-| `CAFFEINATE_BIN` | Optional executable path or command name for macOS `caffeinate`; when unavailable, the launcher runs without it. |
-| `PI_CODING_AGENT_DIR` | Explicit OMP agent data directory used by OMP, history search, and telemetry. |
-| `OMP_HISTORY_DB` | Explicit history database path for UltraTerm history search. |
-
-Without `PI_CODING_AGENT_DIR`, history and telemetry ask OMP for its effective agent directory with `omp config path`, including any default profile selected by OMP configuration. If that discovery command is unavailable, UltraTerm falls back to `~/.omp/agent`, or `~/.omp/profiles/$OMP_PROFILE/agent` when a profile is explicit.
+On first launch UltraTerm asks whether you want to share anonymous usage
+stats. When enabled it sends only the app version, OS and architecture, and
+terminal counts — a launch ping plus at most one heartbeat per day — to
+analytics.libertydesign.studio. It never sends names, file paths, prompts, or
+terminal content. The choice can be changed anytime under Settings → Privacy;
+declining disables all telemetry traffic.
 
 ## Development
+
+Requires Node.js and Rust.
 
 ```sh
 npm install
 npm run tauri dev
 ```
 
-## Verification
+Checks and tests:
 
 ```sh
 npm run check
 npm test
 ```
 
-## Production build
+Local build + install into `/Applications` (backs up the previous app to
+`.app-backup/`):
 
 ```sh
-npm run tauri build
+scripts/self-update.sh
 ```
 
-Build artifacts:
+## Releasing
 
-- `src-tauri/target/release/bundle/macos/UltraTerm.app`
-- `src-tauri/target/release/bundle/dmg/UltraTerm_<version>_aarch64.dmg`
-
-## Updating and restarting
-
-UltraTerm checks GitHub Releases on every launch. When a newer version is
-published, a prompt offers **Update now** or **Later**, plus an "Install
-updates automatically" preference that silently applies future updates on
-launch. The update downloads the signed archive, verifies its SHA-256
-checksum and code signature, swaps the running bundle only after the app
-exits (with rollback if the copy fails), and relaunches. Terminal sessions
-are tmux-backed, so OMP work survives the whole cycle and every pane
-reattaches when UltraTerm opens again.
-
-Re-running the installer remains an equivalent manual path:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/michael-berardi/ultraterm/main/install.sh | bash
-```
-
-For local development builds, `scripts/self-update.sh` still builds, swaps the
-app into `/Applications`, and restarts it. The previous development install is
-preserved under `.app-backup/`.
-
-## Publishing a release
-
-Releases are built locally, Developer ID signed, notarized, checksum-staged,
-and published without GitHub Actions:
-
-```bash
-export APPLE_SIGNING_IDENTITY=\"Developer ID Application: …\"
-export APPLE_INSTALLER_SIGNING_IDENTITY=\"Developer ID Installer: …\"
-export NOTARYTOOL_PROFILE=\"your-keychain-profile\"
+```sh
 npm run release:publish
 ```
 
-`npm run release:package` only stages the `.zip`, `.pkg`, and checksum assets in
-`release/`. Publishing additionally requires an authenticated GitHub CLI.
+Builds, signs (Developer ID), notarizes, and publishes the `.zip` and `.pkg`
+assets to GitHub Releases. Requires the signing identities and a notarytool
+keychain profile; see `scripts/package-release.sh` for the environment
+variables.
 
-## Controls
+Release checklist:
 
-- `⌘T`: open another OMP pane
-- `⌘1` through `⌘9`: focus a pane
-- `Escape`: restore a maximized pane
-- Rebalance: restore the default three-pane matrix
-- Reconnect all: recreate PTY clients while preserving tmux work
+1. Bump the version in `package.json`, `src-tauri/Cargo.toml`, and
+   `src-tauri/tauri.conf.json` together.
+2. **Review this README against the release** — features, controls, and
+   privacy notes change over time; update anything that drifted.
+3. `npm run check && npm test`
+4. `npm run release:publish`
 
 ## License
 

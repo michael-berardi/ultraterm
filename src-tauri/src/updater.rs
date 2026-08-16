@@ -48,7 +48,7 @@ impl Version {
     }
 }
 
-fn http_client(timeout: Duration) -> Result<reqwest::Client, String> {
+pub(crate) fn http_client(timeout: Duration) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .user_agent(concat!("ultraterm-updater/", env!("CARGO_PKG_VERSION")))
         .timeout(timeout)

@@ -29,7 +29,7 @@ import { formatCacheHitPercent } from "../lib/tokenTelemetry";
 import {
   LAUNCH_PROFILE_OPTIONS,
   launchProfileLabel,
-  type EffectMode,
+  type AppTelemetryConsent,
   type LaunchProfileId,
   type MemorySnapshot,
   type ProviderUsagePreferences,
@@ -50,7 +50,6 @@ interface WorkspaceRailProps {
   launchProfile: LaunchProfileId;
   isBooting: boolean;
   theme: ThemeId;
-  effectMode: EffectMode;
   terminalPreferences: TerminalPreferences;
   providerUsagePreferences: ProviderUsagePreferences;
   notice: string | null;
@@ -66,9 +65,10 @@ interface WorkspaceRailProps {
   onExitSession: (id: string) => void;
   onOpenController: () => void;
   onThemeChange: (theme: ThemeId) => void;
-  onEffectModeChange: (mode: EffectMode) => void;
   onTerminalPreferencesChange: (preferences: TerminalPreferences) => void;
   onProviderUsagePreferencesChange: (preferences: ProviderUsagePreferences) => void;
+  telemetryConsent: AppTelemetryConsent;
+  onTelemetryConsentChange: (enabled: boolean) => void;
   onDismissNotice: () => void;
 }
 
@@ -159,7 +159,6 @@ export function WorkspaceRail({
   launchProfile,
   isBooting,
   theme,
-  effectMode,
   terminalPreferences,
   providerUsagePreferences,
   notice,
@@ -175,9 +174,10 @@ export function WorkspaceRail({
   onExitSession,
   onOpenController,
   onThemeChange,
-  onEffectModeChange,
   onTerminalPreferencesChange,
   onProviderUsagePreferencesChange,
+  telemetryConsent,
+  onTelemetryConsentChange,
   onDismissNotice,
 }: WorkspaceRailProps): ReactElement {
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -418,6 +418,16 @@ export function WorkspaceRail({
                       type="button"
                       className={`terminal-list__item${session.id === activeId ? " is-active" : ""}${selectedIds.has(session.id) ? " is-selected" : ""}${session.activity === "working" ? " is-working" : " is-idle"}`}
                       aria-pressed={selectedIds.has(session.id)}
+                      onPointerEnter={(event) => {
+                        const titleEl = event.currentTarget.querySelector<HTMLElement>(".terminal-list__copy strong");
+                        event.currentTarget.classList.toggle(
+                          "has-clipped-title",
+                          Boolean(titleEl && titleEl.scrollWidth > titleEl.clientWidth + 1),
+                        );
+                      }}
+                      onPointerLeave={(event) => {
+                        event.currentTarget.classList.remove("has-clipped-title");
+                      }}
                       onClick={(event) => onSelect(session.id, event.shiftKey)}
                       onContextMenu={(event) => {
                         event.preventDefault();
@@ -432,8 +442,8 @@ export function WorkspaceRail({
                       <span className="terminal-list__icon">
                         <TerminalSquare size={14} />
                       </span>
-                      <span className="terminal-list__copy">
-                        <strong title={displayName}>{session.slot} · {displayName}</strong>
+                      <span className="terminal-list__copy" data-title={displayName}>
+                        <strong>{session.slot} · {displayName}</strong>
                         <small title={tokens?.model ?? "OMP model pending"}>{stateDetail}</small>
                       </span>
                       <span className="terminal-list__meta">
@@ -674,12 +684,12 @@ export function WorkspaceRail({
       <SettingsModal
         open={settingsOpen}
         theme={theme}
-        effectMode={effectMode}
         terminalPreferences={terminalPreferences}
         providerUsagePreferences={providerUsagePreferences}
         initialSection={settingsSection}
+        telemetryConsent={telemetryConsent}
+        onTelemetryConsentChange={onTelemetryConsentChange}
         onThemeChange={onThemeChange}
-        onEffectModeChange={onEffectModeChange}
         onTerminalPreferencesChange={onTerminalPreferencesChange}
         onProviderUsagePreferencesChange={onProviderUsagePreferencesChange}
         onClose={() => {

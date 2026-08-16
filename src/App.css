@@ -24,8 +24,6 @@
   --danger: #ff9d9b;
   --pace-over: #ff6878;
   --pace-under: #4ee39a;
-  --caustic-one: rgba(150, 126, 214, 0.16);
-  --caustic-two: rgba(92, 172, 210, 0.13);
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -55,7 +53,6 @@
   --overlay-fill: rgba(0, 0, 0, 0.72);
   --settings-sidebar-fill: rgba(255, 255, 255, 0.02);
   --settings-icon-fill: rgba(255, 255, 255, 0.04);
-  --settings-spectrum-fill: rgba(150, 150, 160, 0.18);
   --theme-preview-oled: radial-gradient(circle at 30% 24%, #151517, #000 58%);
   --theme-preview-white: linear-gradient(145deg, #fff 0%, #fff 52%, #e8e8eb 100%);
   --theme-preview-titanium: radial-gradient(circle at 28% 22%, #a8aeb8, #3f444c 45%, #181b20 78%);
@@ -76,8 +73,6 @@
   --accent: #f5f7fa;
   --accent-soft: rgba(183, 192, 207, 0.2);
   --working: #dce4ef;
-  --caustic-one: rgba(190, 203, 222, 0.105);
-  --caustic-two: rgba(239, 241, 245, 0.065);
   --wallpaper:
     radial-gradient(ellipse at 8% 0%, rgba(124, 136, 155, 0.17), transparent 36%),
     radial-gradient(ellipse at 88% 12%, rgba(180, 184, 193, 0.07), transparent 31%),
@@ -93,8 +88,6 @@
   --accent: #eaf5f6;
   --accent-soft: rgba(124, 177, 178, 0.17);
   --working: #c6e3df;
-  --caustic-one: rgba(104, 178, 164, 0.09);
-  --caustic-two: rgba(113, 140, 187, 0.075);
   --wallpaper:
     radial-gradient(ellipse at 10% -8%, rgba(67, 126, 116, 0.14), transparent 36%),
     radial-gradient(ellipse at 92% 8%, rgba(73, 95, 139, 0.1), transparent 32%),
@@ -110,8 +103,6 @@
   --accent: #f8eadb;
   --accent-soft: rgba(191, 133, 87, 0.18);
   --working: #ead3bc;
-  --caustic-one: rgba(196, 117, 65, 0.09);
-  --caustic-two: rgba(215, 174, 127, 0.06);
   --wallpaper:
     radial-gradient(ellipse at 10% -6%, rgba(141, 72, 38, 0.14), transparent 37%),
     radial-gradient(ellipse at 91% 9%, rgba(164, 112, 70, 0.075), transparent 32%),
@@ -139,8 +130,6 @@
   --danger: #a51d28;
   --pace-over: #a51d28;
   --pace-under: #08703a;
-  --caustic-one: transparent;
-  --caustic-two: transparent;
   --separator: rgba(24, 24, 29, 0.1);
   --control-border: rgba(24, 24, 29, 0.14);
   --control-border-strong: rgba(24, 24, 29, 0.25);
@@ -149,7 +138,6 @@
   --overlay-fill: rgba(245, 245, 247, 0.8);
   --settings-sidebar-fill: rgba(24, 24, 29, 0.025);
   --settings-icon-fill: rgba(24, 24, 29, 0.045);
-  --settings-spectrum-fill: rgba(74, 74, 86, 0.13);
   --terminal-background: #fff;
   --wallpaper: #fff;
 }
@@ -326,54 +314,6 @@ button:disabled {
   background: none;
 }
 
-
-.ambient-field {
-  position: fixed;
-  inset: 0;
-  z-index: -2;
-  overflow: hidden;
-  pointer-events: none;
-}
-
-.ambient-field__caustic,
-.ambient-field__prism {
-  position: absolute;
-  display: block;
-  border-radius: 999px;
-  mix-blend-mode: screen;
-  will-change: transform;
-}
-
-.ambient-field__caustic {
-  width: 56vw;
-  height: 56vw;
-  filter: blur(90px);
-}
-
-.ambient-field__caustic--one {
-  top: -38vw;
-  left: -10vw;
-  background: radial-gradient(circle at 62% 64%, var(--caustic-one), transparent 60%);
-  animation: caustic-drift-one 46s ease-in-out infinite alternate;
-}
-
-.ambient-field__caustic--two {
-  right: -18vw;
-  bottom: -42vw;
-  background: radial-gradient(circle at 38% 36%, var(--caustic-two), transparent 62%);
-  animation: caustic-drift-two 58s ease-in-out infinite alternate;
-}
-
-.ambient-field__prism {
-  inset: 14% -24% auto;
-  height: 24%;
-  border-radius: 50%;
-  opacity: 0.5;
-  background: linear-gradient(100deg, transparent 12%, rgba(165, 138, 255, 0.16), rgba(116, 208, 255, 0.15), rgba(255, 168, 216, 0.12), transparent 88%);
-  filter: blur(64px);
-  transform: rotate(-12deg);
-  animation: prism-drift 44s ease-in-out infinite alternate;
-}
 
 .workspace-rail {
   position: relative;
@@ -1154,22 +1094,6 @@ button:disabled {
     0 0 3px rgba(255, 255, 255, 0.4);
 }
 
-.effects-spectrum .terminal-pane.is-working::after {
-  position: absolute;
-  inset: 0;
-  z-index: 9;
-  display: block;
-  border: 1px solid color-mix(in srgb, var(--working) 26%, transparent);
-  border-radius: inherit;
-  box-shadow: inset 0 0 18px color-mix(in srgb, var(--working) 8%, transparent);
-  content: "";
-  pointer-events: none;
-}
-
-.effects-spectrum .terminal-pane.is-working .terminal-pane__focus-indicator {
-  box-shadow: 0 -2px 16px color-mix(in srgb, var(--working) 42%, transparent);
-}
-
 .terminal-pane__viewport {
   position: relative;
   z-index: 4;
@@ -1800,24 +1724,6 @@ button:disabled {
   background: var(--theme-preview-ember);
 }
 
-.settings-choice__icon {
-  display: grid;
-  width: var(--space-8);
-  height: var(--space-8);
-  place-items: center;
-  border: 1px solid var(--control-border);
-  border-radius: var(--radius-small);
-  background: var(--settings-icon-fill);
-}
-
-.settings-choice__icon--focus {
-  box-shadow: 0 0 var(--space-3) var(--accent-soft);
-}
-
-.settings-choice__icon--spectrum {
-  background: var(--settings-spectrum-fill);
-}
-
 .settings-preference-group {
   overflow: hidden;
   border: 1px solid var(--control-border);
@@ -1989,21 +1895,6 @@ button:disabled {
     opacity: 0;
     transform: scale3d(0.985, 0.985, 1);
   }
-}
-
-@keyframes caustic-drift-one {
-  from { transform: translate3d(-3%, -2%, 0) scale(0.95); }
-  to { transform: translate3d(13%, 8%, 0) scale(1.12); }
-}
-
-@keyframes caustic-drift-two {
-  from { transform: translate3d(4%, -4%, 0) scale(1.08); }
-  to { transform: translate3d(-12%, 11%, 0) scale(0.94); }
-}
-
-@keyframes prism-drift {
-  from { transform: translate3d(-8%, -4%, 0) rotate(-12deg); }
-  to { transform: translate3d(9%, 7%, 0) rotate(-7deg); }
 }
 
 @media (max-width: 1400px) {
@@ -2755,9 +2646,14 @@ button:disabled {
 }
 
 .history-chart__bar {
+  cursor: pointer;
   transition:
     y 480ms cubic-bezier(0.2, 0.76, 0.25, 1),
     height 480ms cubic-bezier(0.2, 0.76, 0.25, 1);
+}
+
+.history-chart__bar:hover {
+  filter: brightness(1.25);
 }
 
 .history-table-wrap {
@@ -3397,7 +3293,6 @@ button:disabled {
 
 /* White: the flat, high-contrast inverse of Obsidian OLED. */
 .ultraterm-shell[data-theme="white"]::before,
-.ultraterm-shell[data-theme="white"] .ambient-field,
 .ultraterm-shell[data-theme="white"] .workspace-rail__specular,
 .ultraterm-shell[data-theme="white"] .workspace-rail__refraction {
   display: none;
@@ -3864,4 +3759,149 @@ button:disabled {
 [data-theme="white"] .update-prompt__actions button.is-primary {
   background: #0a5f8e;
   color: #fff;
+}
+
+/* Clipped terminal titles expand as an overlay popover on hover; the in-flow
+   label never moves, so nothing else in the rail shifts. */
+.terminal-list__item.has-clipped-title {
+  z-index: 6;
+}
+
+.terminal-list__item.has-clipped-title .terminal-list__copy::after {
+  content: attr(data-title);
+  position: absolute;
+  z-index: 30;
+  top: -5px;
+  left: -6px;
+  max-width: 260px;
+  padding: 4px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 9px;
+  background: rgba(18, 18, 24, 0.97);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.55);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 620;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+[data-theme="white"] .terminal-list__item.has-clipped-title .terminal-list__copy::after {
+  border-color: var(--control-border);
+  background: rgba(252, 252, 254, 0.98);
+  box-shadow: 0 12px 34px rgba(24, 24, 29, 0.22);
+}
+
+/* History filter chips: legend and table model entries toggle the model
+   filter, Google-Analytics style. */
+.history-legend li button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.history-legend li button:hover {
+  border-color: var(--control-border);
+  background: var(--control-fill-hover);
+}
+
+.history-legend li button.is-active {
+  border-color: var(--control-border-strong);
+  background: var(--control-fill-hover);
+  color: var(--text);
+}
+
+.history-legend li button.history-legend__clear {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.history-legend li button.history-legend__clear:hover {
+  color: var(--text);
+}
+
+/* Compact single-line model chips keep one day per table row, so the whole
+   range fits inside the modal without scrolling. */
+.history-table td ul {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 4px 10px;
+  overflow: hidden;
+}
+
+.history-table td ul li {
+  white-space: nowrap;
+}
+
+.history-table td li button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 5px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.history-table td li button:hover {
+  border-color: var(--control-border);
+  background: var(--control-fill-hover);
+  color: var(--text);
+}
+
+.history-table th,
+.history-table td {
+  padding: 4px var(--space-3);
+}
+
+.history-summary dd {
+  font-size: 15px;
+}
+
+.settings-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  user-select: none;
+}
+
+.settings-toggle:hover {
+  border-color: var(--control-border-strong);
+  background: var(--control-fill-hover);
+}
+
+.settings-toggle input {
+  margin-top: 2px;
+  accent-color: #0a5f8e;
+}
+
+.settings-toggle span {
+  display: grid;
+  gap: 2px;
+}
+
+.settings-toggle strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.settings-toggle small {
+  color: var(--text-muted);
+  font-size: 10.5px;
 }

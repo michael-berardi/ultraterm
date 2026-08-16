@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AppTelemetryState,
   AppUpdateStatus,
   CreateSessionRequest,
   HistoryEntry,
@@ -128,6 +129,26 @@ export function checkAppUpdate(): Promise<AppUpdateStatus> {
  */
 export function installAppUpdate(): Promise<void> {
   return invoke("install_app_update");
+}
+
+export function appTelemetryState(): Promise<AppTelemetryState> {
+  return invoke("app_telemetry_state");
+}
+
+export function setAppTelemetryConsent(enabled: boolean): Promise<void> {
+  return invoke("set_app_telemetry_consent", { enabled });
+}
+
+/**
+ * Fire-and-forget product telemetry. `launch` is sent every boot;
+ * `heartbeat` is deduplicated to once per local day in the backend.
+ * Both are no-ops unless the user has telemetry enabled.
+ */
+export function recordAppEvent(
+  event: "launch" | "heartbeat",
+  data: Record<string, unknown>,
+): Promise<void> {
+  return invoke("record_app_event", { event, data });
 }
 
 export function voiceHealth(): Promise<VoiceServiceResponse> {

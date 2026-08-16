@@ -1,3 +1,4 @@
+mod app_telemetry;
 mod history;
 mod maintenance;
 mod provider_usage;
@@ -1338,6 +1339,9 @@ pub fn run() {
             restart_app,
             updater::check_app_update,
             updater::install_app_update,
+            app_telemetry::app_telemetry_state,
+            app_telemetry::set_app_telemetry_consent,
+            app_telemetry::record_app_event,
             provider_usage::provider_usage,
             provider_usage::save_provider_credential,
             provider_usage::remove_provider_credential,

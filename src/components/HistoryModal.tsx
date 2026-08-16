@@ -32,7 +32,7 @@ const MODEL_PALETTE = [
 ];
 
 const CHART_WIDTH = 720;
-const CHART_HEIGHT = 260;
+const CHART_HEIGHT = 190;
 const CHART_PAD = { top: 12, right: 10, bottom: 28, left: 48 };
 
 const dayLabelFormatter = new Intl.DateTimeFormat(undefined, {
@@ -83,6 +83,7 @@ export function HistoryModal({
   onClose,
 }: HistoryModalProps): ReactElement | null {
   const [range, setRange] = useState<HistoryRange>("7d");
+  const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const modalRef = useRef<HTMLElement>(null);
   const initialFocusRef = useRef<HTMLButtonElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
@@ -123,6 +124,26 @@ export function HistoryModal({
     () => new Map(models.map((entry) => [entry.model, entry.color])),
     [models],
   );
+
+  // A range change can drop the selected model entirely; clear the filter
+  // rather than showing an empty view with a hidden cause.
+  useEffect(() => {
+    if (selectedModel && !models.some((entry) => entry.model === selectedModel)) {
+      setSelectedModel(null);
+    }
+  }, [models, selectedModel]);
+
+  const visibleModels = useMemo(
+    () => selectedModel
+      ? models.filter((entry) => entry.model === selectedModel)
+      : models,
+    [models, selectedModel],
+  );
+
+  const visibleTotals = useMemo<TokenCounts>(() => {
+    if (!selectedModel) return totals;
+    return models.find((entry) => entry.model === selectedModel)?.totals ?? emptyCounts();
+  }, [models, selectedModel, totals]);
 
   useEffect(() => {
     if (!open) return;
@@ -170,7 +191,11 @@ export function HistoryModal({
   const chartInnerWidth = CHART_WIDTH - CHART_PAD.left - CHART_PAD.right;
   const chartInnerHeight = CHART_HEIGHT - CHART_PAD.top - CHART_PAD.bottom;
   const baseline = CHART_PAD.top + chartInnerHeight;
-  const maxDayTotal = Math.max(1, ...days.map((day) => day.usage.total));
+  const dayVisibleTotal = (day: (typeof days)[number]): number => visibleModels.reduce(
+    (sum, entry) => sum + (day.models.find((item) => item.model === entry.model)?.usage.total ?? 0),
+    0,
+  );
+  const maxDayTotal = Math.max(1, ...days.map(dayVisibleTotal));
   const barSlot = days.length > 0 ? chartInnerWidth / days.length : chartInnerWidth;
   const barWidth = Math.max(3, Math.min(30, barSlot * 0.62));
   const tickLabelEvery = Math.max(1, Math.ceil(days.length / 8));
@@ -188,7 +213,7 @@ export function HistoryModal({
         <header className="history-modal__header">
           <div>
             <h2 id="history-title"><ChartColumn size={17} /> Token history</h2>
-            <p>Daily OMP token usage split by model</p>
+            <p>Daily OMP token usage split by model — click a model to filter</p>
           </div>
           <button type="button" aria-label="Close token history" onClick={onClose}>
             <X size={16} />
@@ -211,14 +236,36 @@ export function HistoryModal({
             ))}
           </div>
           {models.length > 0 && (
-            <ul className="history-legend" aria-label="Models">
-              {models.map((entry) => (
-                <li key={entry.model}>
-                  <i style={{ background: entry.color }} aria-hidden="true" />
-                  <span>{entry.model}</span>
-                  <strong>{entry.totals.total.toLocaleString()}</strong>
+            <ul className="history-legend" aria-label="Models — click to filter">
+              {models.map((entry) => {
+                const active = selectedModel === entry.model;
+                return (
+                  <li key={entry.model}>
+                    <button
+                      type="button"
+                      className={active ? "is-active" : ""}
+                      aria-pressed={active}
+                      title={active ? `Clear the ${entry.model} filter` : `Filter to ${entry.model}`}
+                      onClick={() => setSelectedModel(active ? null : entry.model)}
+                    >
+                      <i style={{ background: entry.color }} aria-hidden="true" />
+                      <span>{entry.model}</span>
+                      <strong>{entry.totals.total.toLocaleString()}</strong>
+                    </button>
+                  </li>
+                );
+              })}
+              {selectedModel && (
+                <li>
+                  <button
+                    type="button"
+                    className="history-legend__clear"
+                    onClick={() => setSelectedModel(null)}
+                  >
+                    Clear filter ×
+                  </button>
                 </li>
-              ))}
+              )}
             </ul>
           )}
         </div>
@@ -231,30 +278,30 @@ export function HistoryModal({
           </div>
         ) : (
           <>
-            <dl className="history-summary" aria-label="Totals for selected range">
+            <dl className="history-summary" aria-label={selectedModel ? `Totals for ${selectedModel} in selected range` : "Totals for selected range"}>
               <div>
                 <dt>Total</dt>
-                <dd>{totals.total.toLocaleString()}</dd>
+                <dd>{visibleTotals.total.toLocaleString()}</dd>
               </div>
               <div>
                 <dt>Input</dt>
-                <dd>{totals.input.toLocaleString()}</dd>
+                <dd>{visibleTotals.input.toLocaleString()}</dd>
               </div>
               <div>
                 <dt>Output</dt>
-                <dd>{totals.output.toLocaleString()}</dd>
+                <dd>{visibleTotals.output.toLocaleString()}</dd>
               </div>
               <div>
                 <dt>Cache read</dt>
-                <dd>{totals.cacheRead.toLocaleString()}</dd>
+                <dd>{visibleTotals.cacheRead.toLocaleString()}</dd>
               </div>
               <div>
                 <dt>Cache hit</dt>
-                <dd>{formatCacheHitPercent(totals)}</dd>
+                <dd>{formatCacheHitPercent(visibleTotals)}</dd>
               </div>
               <div>
                 <dt>Cache write</dt>
-                <dd>{totals.cacheWrite.toLocaleString()}</dd>
+                <dd>{visibleTotals.cacheWrite.toLocaleString()}</dd>
               </div>
             </dl>
 
@@ -298,7 +345,7 @@ export function HistoryModal({
                   let stack = 0;
                   return (
                     <g key={day.date}>
-                      {models.map((entry) => {
+                      {visibleModels.map((entry) => {
                         const modelDay = day.models.find((item) => item.model === entry.model);
                         const value = modelDay?.usage.total ?? 0;
                         if (value <= 0) return null;
@@ -314,7 +361,14 @@ export function HistoryModal({
                             width={barWidth}
                             height={height}
                             fill={entry.color}
-                          />
+                            role="button"
+                            tabIndex={-1}
+                            onClick={() => setSelectedModel(
+                              selectedModel === entry.model ? null : entry.model,
+                            )}
+                          >
+                            <title>{`${day.date} · ${entry.model} · ${value.toLocaleString()} tokens`}</title>
+                          </rect>
                         );
                       })}
                       {dayIndex % tickLabelEvery === 0 && (
@@ -349,33 +403,51 @@ export function HistoryModal({
                   </tr>
                 </thead>
                 <tbody>
-                  {[...days].reverse().map((day) => (
-                    <tr key={day.date}>
-                      <th scope="row">
-                        <time dateTime={day.date}>
-                          {dayFullFormatter.format(parseHistoryDate(day.date))}
-                        </time>
-                      </th>
-                      <td>
-                        <ul>
-                          {day.models.map((entry) => (
-                            <li key={entry.model}>
-                              <i
-                                style={{ background: colorByModel.get(entry.model) ?? "var(--text-faint)" }}
-                                aria-hidden="true"
-                              />
-                              {entry.model} · {entry.usage.total.toLocaleString()}
-                            </li>
-                          ))}
-                        </ul>
-                      </td>
-                      <td>{day.usage.input.toLocaleString()}</td>
-                      <td>{day.usage.output.toLocaleString()}</td>
-                      <td>{(day.usage.cacheRead + day.usage.cacheWrite).toLocaleString()}</td>
-                      <td>{formatCacheHitPercent(day.usage)}</td>
-                      <td>{day.usage.total.toLocaleString()}</td>
-                    </tr>
-                  ))}
+                  {[...days].reverse().map((day) => {
+                    const rowModels = selectedModel
+                      ? day.models.filter((entry) => entry.model === selectedModel)
+                      : day.models;
+                    if (selectedModel && rowModels.length === 0) return null;
+                    const rowUsage = selectedModel ? rowModels[0].usage : day.usage;
+                    return (
+                      <tr key={day.date}>
+                        <th scope="row">
+                          <time dateTime={day.date}>
+                            {dayFullFormatter.format(parseHistoryDate(day.date))}
+                          </time>
+                        </th>
+                        <td>
+                          <ul>
+                            {rowModels.map((entry) => (
+                              <li key={entry.model}>
+                                <button
+                                  type="button"
+                                  aria-pressed={selectedModel === entry.model}
+                                  title={selectedModel === entry.model
+                                    ? `Clear the ${entry.model} filter`
+                                    : `Filter to ${entry.model}`}
+                                  onClick={() => setSelectedModel(
+                                    selectedModel === entry.model ? null : entry.model,
+                                  )}
+                                >
+                                  <i
+                                    style={{ background: colorByModel.get(entry.model) ?? "var(--text-faint)" }}
+                                    aria-hidden="true"
+                                  />
+                                  {entry.model} · {entry.usage.total.toLocaleString()}
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        </td>
+                        <td>{rowUsage.input.toLocaleString()}</td>
+                        <td>{rowUsage.output.toLocaleString()}</td>
+                        <td>{(rowUsage.cacheRead + rowUsage.cacheWrite).toLocaleString()}</td>
+                        <td>{formatCacheHitPercent(rowUsage)}</td>
+                        <td>{rowUsage.total.toLocaleString()}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

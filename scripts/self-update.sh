@@ -58,7 +58,17 @@ if [[ "${SKIP_INSTALL:-0}" == "1" ]]; then
   exit 0
 fi
 
-codesign --force --deep --sign - "$BUILT_APP"
+# Sign local installs with the stable Developer ID identity (same as release
+# builds) so macOS permissions granted to UltraTerm — Screen Recording,
+# Accessibility, etc. — survive every update. Ad-hoc signing (`--sign -`)
+# creates a new code identity per build and silently invalidates those grants;
+# use ALLOW_ADHOC=1 only for throwaway test builds.
+if [[ "${ALLOW_ADHOC:-0}" == "1" ]]; then
+  codesign --force --deep --sign - "$BUILT_APP"
+else
+  SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:-Developer ID Application: Michael Berardi (T63VT9UAY2)}"
+  codesign --force --deep --sign "$SIGNING_IDENTITY" "$BUILT_APP"
+fi
 codesign --verify --deep --strict "$BUILT_APP"
 
 if [[ -d "$INSTALL_PATH" ]]; then

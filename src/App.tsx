@@ -4,18 +4,21 @@ import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./App.css";
-import { AmbientField } from "./components/AmbientField";
 import { TerminalPane } from "./components/TerminalPane";
 import { WorkspaceRail } from "./components/WorkspaceRail";
 import { ControllerModal } from "./components/ControllerModal";
+import { TelemetryConsent } from "./components/TelemetryConsent";
 import { UpdatePrompt } from "./components/UpdatePrompt";
 import { VoicePreviewModal } from "./components/VoicePreviewModal";
 import { useAppUpdate } from "./hooks/useAppUpdate";
 import { useTerminalWorkspace } from "./hooks/useTerminalWorkspace";
 import { usePs4Controller } from "./hooks/usePs4Controller";
 import {
+  appTelemetryState,
   cancelVoiceInput,
   finishVoiceInput,
+  recordAppEvent,
+  setAppTelemetryConsent,
   startVoiceInput,
   voiceInputStatus,
 } from "./lib/terminalApi";
@@ -27,7 +30,7 @@ import { insertDroppedFilesIntoActiveTerminal } from "./lib/fileDrop";
 import {
   DEFAULT_TERMINAL_PREFERENCES,
   TERMINAL_SCROLLBACK,
-  type EffectMode,
+  type AppTelemetryConsent,
   type LaunchProfileId,
   type ProviderUsagePreferences,
   type TerminalController,
@@ -46,7 +49,6 @@ const WINDOW_GEOMETRY_SAVE_DELAY_MILLISECONDS = 150;
 const TERMINAL_FONT_SIZE_STORAGE_KEY = "ultraterm.terminal-font-size";
 const TERMINAL_CURSOR_STYLE_STORAGE_KEY = "ultraterm.terminal-cursor-style";
 const TERMINAL_CURSOR_BLINK_STORAGE_KEY = "ultraterm.terminal-cursor-blink";
-const EFFECT_MODE_STORAGE_KEY = "ultraterm.effects.v2";
 const MINIMUM_TERMINAL_FONT_SIZE = 9;
 const PANE_EXIT_DURATION_MILLISECONDS = 180;
 const PANE_REFLOW_DURATION_MILLISECONDS = 220;
@@ -297,12 +299,6 @@ function App(): ReactElement {
       ? stored
       : "oled";
   });
-  const [effectMode, setEffectMode] = useState<EffectMode>(() => {
-    const stored = localStorage.getItem(EFFECT_MODE_STORAGE_KEY);
-    return stored === "off" || stored === "focus" || stored === "spectrum"
-      ? stored
-      : "focus";
-  });
   const [terminalPreferences, setTerminalPreferences] = useState<TerminalPreferences>(
     readTerminalPreferences,
   );
@@ -312,6 +308,57 @@ function App(): ReactElement {
   const [controllerOpen, setControllerOpen] = useState(false);
   const [controllerNotice, setControllerNotice] = useState<string | null>(null);
   const appUpdate = useAppUpdate();
+  const [telemetryConsent, setTelemetryConsent] = useState<AppTelemetryConsent>("unset");
+  const [telemetryConsentLoaded, setTelemetryConsentLoaded] = useState(false);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+    void appTelemetryState()
+      .then((state) => {
+        if (cancelled) return;
+        setTelemetryConsent(state.consent);
+        setTelemetryConsentLoaded(true);
+      })
+      .catch(() => {
+        if (!cancelled) setTelemetryConsentLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleTelemetryChoice = useCallback((enabled: boolean): void => {
+    setTelemetryConsent(enabled ? "enabled" : "disabled");
+    void setAppTelemetryConsent(enabled).catch(() => setTelemetryConsent("unset"));
+  }, []);
+
+  // Launch event fires once bootstrap settles so the terminal count is real;
+  // heartbeat repeats on a 6h timer and the backend dedups it to one per day.
+  const launchEventSent = useRef(false);
+  useEffect(() => {
+    if (
+      launchEventSent.current
+      || workspace.isBooting
+      || !telemetryConsentLoaded
+      || telemetryConsent !== "enabled"
+    ) return;
+    launchEventSent.current = true;
+    void recordAppEvent("launch", {
+      terminals: workspace.sessions.length,
+      theme,
+    }).catch(() => {});
+  }, [telemetryConsent, telemetryConsentLoaded, theme, workspace.isBooting, workspace.sessions.length]);
+
+  useEffect(() => {
+    if (telemetryConsent !== "enabled") return;
+    const beat = () => void recordAppEvent("heartbeat", {
+      terminals: sessionsRef.current.length,
+      theme,
+    }).catch(() => {});
+    const interval = window.setInterval(beat, 6 * 60 * 60 * 1000);
+    return () => window.clearInterval(interval);
+  }, [telemetryConsent, theme]);
   const [voice, setVoice] = useState<VoiceSession>(IDLE_VOICE_SESSION);
   const voiceOperation = useRef(0);
   const voiceCancellation = useRef(false);
@@ -533,10 +580,6 @@ function App(): ReactElement {
     });
   }, [workspace.sessions]);
 
-
-  useEffect(() => {
-    localStorage.setItem(EFFECT_MODE_STORAGE_KEY, effectMode);
-  }, [effectMode]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -1227,15 +1270,13 @@ function App(): ReactElement {
 
   return (
     <div
-      className={`ultraterm-shell effects-${effectMode}`}
+      className="ultraterm-shell effects-focus"
       data-theme={theme}
       onMouseDown={(event) => {
         if (event.button !== 0 || event.target !== event.currentTarget) return;
         void getCurrentWindow().startDragging();
       }}
     >
-      <AmbientField mode={effectMode} />
-
       <WorkspaceRail
         sessions={workspace.sessions}
         activeId={activeId}
@@ -1246,7 +1287,6 @@ function App(): ReactElement {
         launchProfile={workspace.launchProfile}
         isBooting={workspace.isBooting || workspace.isAddingPane}
         theme={theme}
-        effectMode={effectMode}
         terminalPreferences={terminalPreferences}
         providerUsagePreferences={providerUsagePreferences}
         notice={workspace.notice ?? controllerNotice}
@@ -1262,8 +1302,9 @@ function App(): ReactElement {
         onExitSession={(id) => void workspace.sendOmpCommand(id, "/exit")}
         onThemeChange={setTheme}
         onOpenController={() => setControllerOpen(true)}
-        onEffectModeChange={setEffectMode}
         onTerminalPreferencesChange={setTerminalPreferences}
+        telemetryConsent={telemetryConsent}
+        onTelemetryConsentChange={handleTelemetryChoice}
         onProviderUsagePreferencesChange={setProviderUsagePreferences}
         onDismissNotice={() => {
           workspace.dismissNotice();
@@ -1366,6 +1407,12 @@ function App(): ReactElement {
           onInstall={() => void appUpdate.install()}
           onDismiss={appUpdate.dismiss}
         />
+      )}
+
+      {telemetryConsentLoaded
+        && telemetryConsent === "unset"
+        && appUpdate.phase === "idle" && (
+        <TelemetryConsent theme={theme} onChoice={handleTelemetryChoice} />
       )}
 
       {splash !== "gone" && (

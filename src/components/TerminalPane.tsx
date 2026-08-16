@@ -335,13 +335,26 @@ export function TerminalPane({
       terminal.options.cursorBlink = currentPreferences.cursorBlink;
       terminal.options.theme = terminalThemeFor(themeRef.current);
       terminal.open(host);
-      try {
-        const webglAddon = new WebglAddon();
-        webglAddon.onContextLoss(() => webglAddon.dispose());
-        terminal.loadAddon(webglAddon);
-      } catch (error) {
-        console.warn("UltraTerm WebGL renderer unavailable; using the DOM renderer.", error);
-      }
+      // Context loss (external-display sleep, GPU reset) silently degrades
+      // xterm to the slow DOM renderer. Recover once after a short settle
+      // instead of staying degraded for the life of the pane.
+      const loadWebgl = (isRecovery: boolean) => {
+        try {
+          const webglAddon = new WebglAddon();
+          webglAddon.onContextLoss(() => {
+            webglAddon.dispose();
+            if (!isRecovery && !disposed) {
+              window.setTimeout(() => {
+                if (!disposed) loadWebgl(true);
+              }, 500);
+            }
+          });
+          terminal.loadAddon(webglAddon);
+        } catch (error) {
+          console.warn("UltraTerm WebGL renderer unavailable; using the DOM renderer.", error);
+        }
+      };
+      loadWebgl(false);
       terminalRef.current = terminal;
       onControllerReady(session.id, {
         scrollLines,
