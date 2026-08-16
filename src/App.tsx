@@ -8,7 +8,9 @@ import { AmbientField } from "./components/AmbientField";
 import { TerminalPane } from "./components/TerminalPane";
 import { WorkspaceRail } from "./components/WorkspaceRail";
 import { ControllerModal } from "./components/ControllerModal";
+import { UpdatePrompt } from "./components/UpdatePrompt";
 import { VoicePreviewModal } from "./components/VoicePreviewModal";
+import { useAppUpdate } from "./hooks/useAppUpdate";
 import { useTerminalWorkspace } from "./hooks/useTerminalWorkspace";
 import { usePs4Controller } from "./hooks/usePs4Controller";
 import {
@@ -309,6 +311,7 @@ function App(): ReactElement {
   );
   const [controllerOpen, setControllerOpen] = useState(false);
   const [controllerNotice, setControllerNotice] = useState<string | null>(null);
+  const appUpdate = useAppUpdate();
   const [voice, setVoice] = useState<VoiceSession>(IDLE_VOICE_SESSION);
   const voiceOperation = useRef(0);
   const voiceCancellation = useRef(false);
@@ -1351,6 +1354,19 @@ function App(): ReactElement {
         }}
         onClose={() => setControllerOpen(false)}
       />
+
+      {appUpdate.status && appUpdate.phase !== "idle" && (
+        <UpdatePrompt
+          theme={theme}
+          phase={appUpdate.phase}
+          status={appUpdate.status}
+          error={appUpdate.error}
+          autoUpdate={appUpdate.autoUpdate}
+          onAutoUpdateChange={appUpdate.setAutoUpdate}
+          onInstall={() => void appUpdate.install()}
+          onDismiss={appUpdate.dismiss}
+        />
+      )}
 
       {splash !== "gone" && (
         <div

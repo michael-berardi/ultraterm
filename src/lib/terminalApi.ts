@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AppUpdateStatus,
   CreateSessionRequest,
   HistoryEntry,
   MaintenanceReport,
@@ -114,6 +115,19 @@ export function maintenanceReport(): Promise<MaintenanceReport | null> {
  */
 export function restartApp(): Promise<void> {
   return invoke("restart_app");
+}
+
+export function checkAppUpdate(): Promise<AppUpdateStatus> {
+  return invoke("check_app_update");
+}
+
+/**
+ * Downloads, verifies, and installs the latest release, then exits so a
+ * detached helper can swap the bundle and relaunch. A rejected promise means
+ * the install failed and the current version is still running untouched.
+ */
+export function installAppUpdate(): Promise<void> {
+  return invoke("install_app_update");
 }
 
 export function voiceHealth(): Promise<VoiceServiceResponse> {

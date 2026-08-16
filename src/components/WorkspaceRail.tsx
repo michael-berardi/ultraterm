@@ -407,6 +407,8 @@ export function WorkspaceRail({
                 sessions.map((session) => {
                   const tokens = telemetry.terminals.find((item) => item.slot === session.slot);
                   const profileName = launchProfileLabel(session.launchProfile);
+                  const taskTitle = tokens?.title?.trim() ? tokens.title.trim() : null;
+                  const displayName = taskTitle ?? (session.launchedOmp ? "New terminal" : session.title);
                   const stateDetail = session.status === "live"
                     ? `${formatModel(tokens?.model)} · ${session.activity}`
                     : session.status;
@@ -431,7 +433,7 @@ export function WorkspaceRail({
                         <TerminalSquare size={14} />
                       </span>
                       <span className="terminal-list__copy">
-                        <strong>Terminal {session.slot}</strong>
+                        <strong title={displayName}>{session.slot} · {displayName}</strong>
                         <small title={tokens?.model ?? "OMP model pending"}>{stateDetail}</small>
                       </span>
                       <span className="terminal-list__meta">

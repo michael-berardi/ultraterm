@@ -64,6 +64,13 @@ export interface PersistentSlotInfo {
   profile: string | null;
 }
 
+export interface AppUpdateStatus {
+  currentVersion: string;
+  latestVersion: string;
+  updateAvailable: boolean;
+  releaseUrl: string;
+}
+
 /**
  * Maps the OMP profile recorded on a persistent tmux session back to a launch
  * profile. Legacy sessions without metadata (and the default "lds" profile)
@@ -121,6 +128,7 @@ export interface TokenChannelTelemetry {
 export interface TerminalTokenTelemetry {
   slot: number;
   sessionId: string | null;
+  title: string | null;
   model: string | null;
   usage: TokenCounts;
   activeSubagents: number;

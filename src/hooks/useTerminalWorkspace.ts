@@ -141,6 +141,7 @@ const DEFAULT_TOKEN_TELEMETRY: TokenTelemetry = {
   terminals: [1, 2, 3].map((slot) => ({
     slot,
     sessionId: null,
+    title: null,
     model: null,
     usage: { ...EMPTY_TOKEN_COUNTS },
     activeSubagents: 0,
@@ -541,8 +542,19 @@ export function useTerminalWorkspace(sessionCap: number) {
       ).sort((left, right) => left - right);
       await cleanupOrphanSlots(intendedSlots);
 
+      // Restore each slot independently: one failing pane (stale signature,
+      // busy tmux server) must not abort the rest of the workspace.
+      const failures: string[] = [];
       for (const row of rowsToRestore) {
-        if (!occupiedSlots.has(row.slot)) await launchSlot(row.slot, row.launchProfile);
+        if (occupiedSlots.has(row.slot)) continue;
+        try {
+          await launchSlot(row.slot, row.launchProfile);
+        } catch (error) {
+          failures.push(`Terminal ${row.slot}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      if (failures.length > 0) {
+        setNotice(`Could not reconnect ${failures.length} terminal(s) — ${failures.join("; ")}`);
       }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));

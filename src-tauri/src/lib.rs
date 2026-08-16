@@ -3,6 +3,7 @@ mod maintenance;
 mod provider_usage;
 mod telemetry;
 mod ultravox_client;
+mod updater;
 
 // UltraTerm Rust backend — single-window Tauri 2 workspace with multiple PTY sessions.
 //
@@ -1335,6 +1336,8 @@ pub fn run() {
             search_history,
             maintenance_report,
             restart_app,
+            updater::check_app_update,
+            updater::install_app_update,
             provider_usage::provider_usage,
             provider_usage::save_provider_credential,
             provider_usage::remove_provider_credential,

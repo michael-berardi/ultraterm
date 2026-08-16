@@ -87,9 +87,16 @@ Build artifacts:
 
 ## Updating and restarting
 
-Re-run the installer to download and atomically replace UltraTerm with the
-latest published release. Terminal sessions are tmux-backed, so OMP sessions
-survive the app restart and reattach when UltraTerm opens again.
+UltraTerm checks GitHub Releases on every launch. When a newer version is
+published, a prompt offers **Update now** or **Later**, plus an "Install
+updates automatically" preference that silently applies future updates on
+launch. The update downloads the signed archive, verifies its SHA-256
+checksum and code signature, swaps the running bundle only after the app
+exits (with rollback if the copy fails), and relaunches. Terminal sessions
+are tmux-backed, so OMP work survives the whole cycle and every pane
+reattaches when UltraTerm opens again.
+
+Re-running the installer remains an equivalent manual path:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/michael-berardi/ultraterm/main/install.sh | bash

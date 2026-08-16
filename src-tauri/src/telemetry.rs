@@ -70,6 +70,7 @@ impl ModelPrice {
 pub struct TerminalTokenTelemetry {
     pub slot: u32,
     pub session_id: Option<String>,
+    pub title: Option<String>,
     pub model: Option<String>,
     pub usage: TokenCounts,
     pub active_subagents: usize,
@@ -410,6 +411,7 @@ impl TokenTelemetryManager {
             terminals.push(TerminalTokenTelemetry {
                 slot,
                 session_id: session_path.and_then(|path| session_id(path)),
+                title: session_path.and_then(|path| session_title(path)),
                 model,
                 usage,
                 active_subagents,
@@ -1299,6 +1301,22 @@ fn session_id(path: &Path) -> Option<String> {
         .map(|(_, id)| id.to_string())
 }
 
+/// Reads the OMP session title from the padded `{"type":"title"}` record on
+/// the first line of a session transcript. OMP rewrites that line in place
+/// when it generates a topic summary, so a fresh read always reflects the
+/// latest title without touching the sqlite usage index.
+fn session_title(path: &Path) -> Option<String> {
+    let file = File::open(path).ok()?;
+    let mut line = String::new();
+    BufReader::new(file).read_line(&mut line).ok()?;
+    let value = serde_json::from_str::<Value>(line.trim_end()).ok()?;
+    if value.get("type").and_then(Value::as_str) != Some("title") {
+        return None;
+    }
+    let title = value.get("title").and_then(Value::as_str)?.trim();
+    (!title.is_empty()).then(|| title.to_string())
+}
+
 fn is_counted_subagent(path: &Path) -> bool {
     path.extension()
         .is_some_and(|extension| extension == "jsonl")
@@ -1356,6 +1374,33 @@ mod tests {
     fn extracts_session_id_from_omp_path() {
         let path = Path::new("2026-07-18T07-10-31-739Z_019f740f-f93b.jsonl");
         assert_eq!(session_id(path).as_deref(), Some("019f740f-f93b"));
+    }
+
+    #[test]
+    fn reads_title_record_from_session_transcript() {
+        let root = std::env::temp_dir().join(format!(
+            "ultraterm-session-title-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("session.jsonl");
+        fs::write(
+            &path,
+            "{\"type\":\"title\",\"v\":1,\"title\":\"Fixing auth flow\",\"updatedAt\":\"2026-08-15T00:00:00.000Z\",\"pad\":\"   \"}\n{\"type\":\"session\",\"version\":3}\n",
+        )
+        .unwrap();
+        assert_eq!(session_title(&path).as_deref(), Some("Fixing auth flow"));
+
+        fs::write(
+            &path,
+            "{\"type\":\"title\",\"v\":1,\"title\":\"\",\"pad\":\"   \"}\n",
+        )
+        .unwrap();
+        assert_eq!(session_title(&path), None);
+
+        fs::write(&path, "{\"type\":\"session\",\"version\":3}\n").unwrap();
+        assert_eq!(session_title(&path), None);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
