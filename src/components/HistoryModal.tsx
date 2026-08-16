@@ -201,7 +201,7 @@ export function HistoryModal({
   const tickLabelEvery = Math.max(1, Math.ceil(days.length / 8));
 
   return createPortal(
-    <div className="settings-overlay" data-theme={theme} role="presentation">
+    <div className="settings-overlay history-overlay" data-theme={theme} role="presentation">
       <section
         className="history-modal"
         ref={modalRef}
@@ -209,7 +209,6 @@ export function HistoryModal({
         aria-modal="true"
         aria-labelledby="history-title"
       >
-        <div className="settings-modal__material" aria-hidden="true" />
         <header className="history-modal__header">
           <div>
             <h2 id="history-title"><ChartColumn size={17} /> Token history</h2>
