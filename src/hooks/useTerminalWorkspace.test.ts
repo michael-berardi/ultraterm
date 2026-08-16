@@ -63,6 +63,7 @@ describe("readTerminalLaunchRows", () => {
       { slot: 2, launchProfile: "default" },
       { slot: 2, launchProfile: "kimi-k3" },
       { slot: 4, launchProfile: "deepseek-v4-flash" },
+      { slot: 5, launchProfile: "local" },
     ]));
 
     expect(readTerminalLaunchRows(8)).toEqual([
@@ -70,6 +71,7 @@ describe("readTerminalLaunchRows", () => {
       { slot: 2, launchProfile: "kimi-k3" },
       { slot: 3, launchProfile: "kimi-k3" },
       { slot: 4, launchProfile: "deepseek-v4-flash" },
+      { slot: 5, launchProfile: "local" },
     ]);
   });
 
@@ -101,9 +103,9 @@ describe("readTerminalLaunchRows", () => {
 
 describe("readLastLaunchProfile", () => {
   it("returns the stored profile when it is a known id", () => {
-    stubStorage("deepseek-v4-flash");
+    stubStorage("local");
 
-    expect(readLastLaunchProfile()).toBe("deepseek-v4-flash");
+    expect(readLastLaunchProfile()).toBe("local");
   });
 
   it("falls back to default for missing or unknown values", () => {

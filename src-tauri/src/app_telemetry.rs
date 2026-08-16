@@ -50,7 +50,7 @@ struct UsageCounters {
     sessions: u64,
 }
 
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TelemetryFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -61,6 +61,15 @@ struct TelemetryFile {
     last_heartbeat_day: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pending_usage_by_day: BTreeMap<String, UsageCounters>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    in_flight_usage: Option<UsageBatch>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageBatch {
+    batch_id: String,
+    counters: UsageCounters,
 }
 
 #[derive(Clone, Serialize)]
@@ -168,7 +177,17 @@ fn parse_state(content: &str) -> TelemetryFile {
         };
         state.pending_usage_by_day.remove(&oldest);
     }
-    if state.consent == TelemetryConsent::Disabled {
+    if state.in_flight_usage.as_ref().is_some_and(|batch| {
+        !valid_batch_id(Some(&batch.batch_id))
+            || batch.counters.terminals > MAX_USAGE_COUNTER
+            || batch.counters.sessions > MAX_USAGE_COUNTER
+            || counters_are_zero(&batch.counters)
+    }) {
+        state.in_flight_usage = None;
+    }
+    if state.consent != TelemetryConsent::Enabled {
+        // A stale identifier or retry queue must never survive before opt-in,
+        // including files written by older opt-out/undecided builds.
         erase_telemetry_state(&mut state);
     }
     state
@@ -176,19 +195,50 @@ fn parse_state(content: &str) -> TelemetryFile {
 
 fn load_state(home: &Path) -> TelemetryFile {
     if let Ok(content) = fs::read_to_string(state_path(home)) {
+        let raw_state = serde_json::from_str::<Value>(&content).ok();
         let state = parse_state(&content);
         if state.consent != TelemetryConsent::Unset {
+            // Compare canonical JSON, not the typed projection: serde ignores
+            // unknown legacy fields that still must be physically erased.
+            let canonical_state = serde_json::to_value(&state).ok();
+            if raw_state.as_ref() != canonical_state.as_ref() {
+                let _ = save_state(home, &state);
+            }
+            if state.consent == TelemetryConsent::Disabled {
+                remove_legacy_state(home);
+            }
             return state;
+        }
+        // An undecided file is allowed to contain only the empty state. Rewrite
+        // any legacy identifier/counters that were discovered and discarded.
+        let canonical_state = serde_json::to_value(&state).ok();
+        if raw_state.as_ref() != canonical_state.as_ref() {
+            let _ = save_state(home, &state);
         }
     }
 
+    // Inspect every legacy path before removing any of them. An older unset
+    // file must not delete a later file that contains persisted consent.
+    let mut legacy_state = None;
+    let mut found_legacy_file = false;
     for path in legacy_state_paths(home) {
-        if let Ok(content) = fs::read_to_string(path) {
+        if let Ok(content) = fs::read_to_string(&path) {
+            found_legacy_file = true;
             let state = parse_state(&content);
-            if state.consent != TelemetryConsent::Unset {
-                return state;
+            if legacy_state.is_none() && state.consent != TelemetryConsent::Unset {
+                legacy_state = Some(state);
             }
         }
+    }
+    if let Some(state) = legacy_state {
+        let _ = save_state(home, &state);
+        remove_legacy_state(home);
+        return state;
+    }
+    if found_legacy_file {
+        // No legacy file contains consent, so stale undecided state can be
+        // removed without risking a persisted choice.
+        remove_legacy_state(home);
     }
     TelemetryFile::default()
 }
@@ -214,6 +264,7 @@ fn erase_telemetry_state(state: &mut TelemetryFile) {
     state.install_id = None;
     state.last_heartbeat_day = None;
     state.pending_usage_by_day.clear();
+    state.in_flight_usage = None;
 }
 
 fn remove_legacy_state(home: &Path) {
@@ -226,6 +277,12 @@ fn valid_install_id(value: Option<&str>) -> bool {
     value
         .and_then(|value| Uuid::parse_str(value).ok())
         .is_some_and(|id| id.get_version_num() == 4 && id.get_variant() == uuid::Variant::RFC4122)
+}
+
+fn valid_batch_id(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        valid_install_id(Some(value)) && value == value.to_ascii_lowercase()
+    })
 }
 
 fn install_id(state: &mut TelemetryFile) -> String {
@@ -282,7 +339,13 @@ fn usage_value(counters: UsageCounters) -> Value {
     Value::Object(usage)
 }
 
-fn build_payload(event: &str, install_id: &str, day: &str, usage: Option<UsageCounters>) -> Value {
+fn build_payload(
+    event: &str,
+    install_id: &str,
+    day: &str,
+    usage: Option<UsageCounters>,
+    batch_id: Option<&str>,
+) -> Value {
     let mut payload = json!({
         "schema": TELEMETRY_SCHEMA,
         "app": APP_NAME,
@@ -294,6 +357,7 @@ fn build_payload(event: &str, install_id: &str, day: &str, usage: Option<UsageCo
         "day": day,
     });
     if event == "usage" {
+        payload["batchId"] = json!(batch_id.unwrap_or_default());
         payload["usage"] = usage_value(usage.unwrap_or_default());
     }
     payload
@@ -304,6 +368,7 @@ async fn send_event(
     event: &str,
     day: &str,
     usage: Option<UsageCounters>,
+    batch_id: Option<&str>,
 ) -> Result<(), String> {
     let Some(install_id) = state.install_id.as_deref() else {
         return Err("Telemetry install ID is missing.".to_string());
@@ -311,7 +376,13 @@ async fn send_event(
     if !send_allowed(state) {
         return Err("Telemetry consent or install ID is invalid.".to_string());
     }
-    let payload = build_payload(event, install_id, day, usage);
+    if event == "usage" && !valid_batch_id(batch_id) {
+        return Err("Telemetry usage batch ID is invalid.".to_string());
+    }
+    if event != "usage" && batch_id.is_some() {
+        return Err("Telemetry batch ID is only valid for usage.".to_string());
+    }
+    let payload = build_payload(event, install_id, day, usage, batch_id);
     let response = crate::updater::http_client(HTTP_TIMEOUT)?
         .post(TELEMETRY_ENDPOINT)
         .json(&payload)
@@ -388,23 +459,59 @@ async fn send_pending_usage(
     state: &mut TelemetryFile,
     today: &str,
 ) -> Result<(), String> {
-    let completed_days = state
-        .pending_usage_by_day
-        .iter()
-        .filter(|(day, counters)| day.as_str() < today && !counters_are_zero(counters))
-        .map(|(day, counters)| (day.clone(), *counters))
-        .collect::<Vec<_>>();
-    let mut changed = false;
-    for (day, usage) in completed_days {
-        if !TELEMETRY_RUNTIME_ENABLED.load(Ordering::Acquire) {
-            break;
+    let batch = if let Some(batch) = state.in_flight_usage.clone() {
+        batch
+    } else {
+        let completed_days = state
+            .pending_usage_by_day
+            .iter()
+            .filter(|(day, counters)| day.as_str() < today && !counters_are_zero(counters))
+            .map(|(day, counters)| (day.clone(), *counters))
+            .collect::<Vec<_>>();
+        let mut counters = UsageCounters::default();
+        for (_, usage) in &completed_days {
+            counters.terminals = counters
+                .terminals
+                .saturating_add(usage.terminals)
+                .min(MAX_USAGE_COUNTER);
+            counters.sessions = counters
+                .sessions
+                .saturating_add(usage.sessions)
+                .min(MAX_USAGE_COUNTER);
         }
-        if send_event(state, "usage", &day, Some(usage)).await.is_ok() {
+        if completed_days.is_empty() || counters_are_zero(&counters) {
+            return Ok(());
+        }
+        // Remove only the counters captured by this immutable batch. Later
+        // usage calls accrue into a fresh day entry while this batch retries.
+        for (day, _) in completed_days {
             state.pending_usage_by_day.remove(&day);
-            changed = true;
         }
+        let batch = UsageBatch {
+            batch_id: Uuid::new_v4().to_string(),
+            counters,
+        };
+        state.in_flight_usage = Some(batch.clone());
+        save_state(home, state)?;
+        batch
+    };
+
+    if !TELEMETRY_RUNTIME_ENABLED.load(Ordering::Acquire) {
+        return Ok(());
     }
-    if changed {
+    // The canonical endpoint accepts only the current UTC day. Retry the
+    // immutable batch with its same ID/counters until a 2xx response.
+    if send_event(
+        state,
+        "usage",
+        today,
+        Some(batch.counters),
+        Some(&batch.batch_id),
+    )
+    .await
+    .is_ok()
+    {
+        state.in_flight_usage = None;
         save_state(home, state)?;
     }
     Ok(())
@@ -485,12 +592,12 @@ pub async fn record_app_event(event: String, data: Value) -> Result<(), String> 
                 // Launch is emitted once by the app after startup settles. No
                 // timestamp is persisted because enabling during a running app
                 // must not manufacture a second startup marker.
-                let _ = send_event(&state, "launch", &today, None).await;
+                let _ = send_event(&state, "launch", &today, None, None).await;
                 return Ok(());
             }
 
             if daily_due(state.last_heartbeat_day.as_deref(), &today) {
-                if send_event(&state, "heartbeat", &today, None).await.is_ok() {
+                if send_event(&state, "heartbeat", &today, None, None).await.is_ok() {
                     state.last_heartbeat_day = Some(today.clone());
                     save_state(&home, &state)?;
                 }
@@ -523,6 +630,7 @@ mod tests {
                 terminals: 3,
                 sessions: 2,
             }),
+            Some("00000000-0000-4000-8000-000000000001"),
         );
         let keys: BTreeSet<&str> = payload
             .as_object()
@@ -535,6 +643,7 @@ mod tests {
             BTreeSet::from([
                 "app",
                 "arch",
+                "batchId",
                 "day",
                 "event",
                 "installId",
@@ -562,10 +671,12 @@ mod tests {
             "00000000-0000-4000-8000-000000000000",
             "2026-08-16",
             None,
+            None,
         );
         let object = payload.as_object().unwrap();
         assert!(!object.contains_key("usage"));
         for forbidden in [
+            "batchId",
             "sentAt",
             "osVersion",
             "locale",
@@ -585,6 +696,35 @@ mod tests {
     }
 
     #[test]
+    fn legacy_unset_or_malformed_file_does_not_hide_later_persisted_consent() {
+        let directory = tempdir().unwrap();
+        let legacy_dir = directory.path().join(".ultraterm");
+        fs::create_dir_all(&legacy_dir).unwrap();
+        let earlier = legacy_dir.join("telemetry.json");
+        let malformed = legacy_dir.join("app-telemetry-state.json");
+        let later = legacy_dir.join("telemetry-state.json");
+        fs::write(&earlier, json!({ "consent": "unset" }).to_string()).unwrap();
+        fs::write(&malformed, "{not-json").unwrap();
+        fs::write(
+            &later,
+            json!({
+                "consent": "enabled",
+                "installId": "00000000-0000-4000-8000-000000000000",
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let state = load_state(directory.path());
+        assert_eq!(state.consent, TelemetryConsent::Enabled);
+        assert!(valid_install_id(state.install_id.as_deref()));
+        assert!(!earlier.exists());
+        assert!(!malformed.exists());
+        assert!(!later.exists());
+        assert_eq!(load_state(directory.path()).consent, TelemetryConsent::Enabled);
+    }
+
+    #[test]
     fn consent_defaults_unset_and_does_not_create_an_identifier() {
         let directory = tempdir().unwrap();
         let state = load_state(directory.path());
@@ -592,6 +732,72 @@ mod tests {
         assert!(state.install_id.is_none());
         assert!(!valid_install_id(state.install_id.as_deref()));
         assert!(!send_allowed(&state));
+    }
+
+    #[test]
+    fn undecided_state_erases_stale_identity_and_queue_on_disk() {
+        let directory = tempdir().unwrap();
+        let path = state_path(directory.path());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            json!({
+                "consent": "unset",
+                "installId": "00000000-0000-4000-8000-000000000000",
+                "lastHeartbeatDay": "2026-08-15",
+                "pendingTerminals": 2,
+                "pendingSessions": 1,
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let state = load_state(directory.path());
+        assert_eq!(state, TelemetryFile::default());
+        let persisted = fs::read_to_string(path).unwrap();
+        let persisted = parse_state(&persisted);
+        assert_eq!(persisted, TelemetryFile::default());
+    }
+
+    #[test]
+    fn disabled_state_rewrites_unknown_sensitive_fields() {
+        let directory = tempdir().unwrap();
+        let path = state_path(directory.path());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            json!({
+                "consent": "disabled",
+                "install_id": "00000000-0000-4000-8000-000000000000",
+                "pending_usage": { "terminals": 4 },
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let state = load_state(directory.path());
+        assert_eq!(state.consent, TelemetryConsent::Disabled);
+        let persisted: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(persisted, json!({ "consent": "disabled" }));
+    }
+
+    #[test]
+    fn in_flight_usage_batch_round_trips_immutably() {
+        let directory = tempdir().unwrap();
+        let state = TelemetryFile {
+            consent: TelemetryConsent::Enabled,
+            install_id: Some("00000000-0000-4000-8000-000000000000".to_string()),
+            in_flight_usage: Some(UsageBatch {
+                batch_id: "00000000-0000-4000-8000-000000000001".to_string(),
+                counters: UsageCounters {
+                    terminals: 3,
+                    sessions: 2,
+                },
+            }),
+            ..TelemetryFile::default()
+        };
+        save_state(directory.path(), &state).unwrap();
+        assert_eq!(load_state(directory.path()), state);
     }
 
     #[test]
@@ -674,7 +880,7 @@ mod tests {
     }
 
     #[test]
-    fn usage_counters_remain_attributed_to_their_utc_day() {
+    fn pending_usage_is_retained_by_utc_day_until_flush() {
         let mut state = TelemetryFile {
             consent: TelemetryConsent::Enabled,
             install_id: Some("00000000-0000-4000-8000-000000000000".to_string()),

@@ -60,6 +60,7 @@ pub enum LaunchProfile {
     GptOnly,
     KimiK3,
     DeepseekV4Flash,
+    Local,
 }
 
 impl LaunchProfile {
@@ -69,6 +70,7 @@ impl LaunchProfile {
             Self::GptOnly => "gpt-only",
             Self::KimiK3 => "kimi-k3",
             Self::DeepseekV4Flash => "deepseek-v4-flash",
+            Self::Local => "local",
         }
     }
 }
@@ -1451,6 +1453,10 @@ mod tests {
             LaunchProfile::DeepseekV4Flash
         );
         assert_eq!(
+            serde_json::from_str::<LaunchProfile>("\"local\"").unwrap(),
+            LaunchProfile::Local
+        );
+        assert_eq!(
             serde_json::to_string(&LaunchProfile::Default).unwrap(),
             "\"default\""
         );
@@ -1466,6 +1472,10 @@ mod tests {
             serde_json::to_string(&LaunchProfile::DeepseekV4Flash).unwrap(),
             "\"deepseek-v4-flash\""
         );
+        assert_eq!(
+            serde_json::to_string(&LaunchProfile::Local).unwrap(),
+            "\"local\""
+        );
         assert!(serde_json::from_str::<LaunchProfile>("\"kimi\"").is_err());
         assert!(serde_json::from_str::<LaunchProfile>("\"\"").is_err());
     }
@@ -1479,6 +1489,7 @@ mod tests {
             LaunchProfile::DeepseekV4Flash.omp_profile(),
             "deepseek-v4-flash"
         );
+        assert_eq!(LaunchProfile::Local.omp_profile(), "local");
     }
 
     #[test]

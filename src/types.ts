@@ -28,7 +28,7 @@ export const DEFAULT_PROVIDER_USAGE_PREFERENCES: Readonly<ProviderUsagePreferenc
 export type SessionStatus = "connecting" | "live" | "exited" | "error";
 export type SessionActivity = "idle" | "working";
 
-export type LaunchProfileId = "default" | "gpt-only" | "kimi-k3" | "deepseek-v4-flash";
+export type LaunchProfileId = "default" | "gpt-only" | "kimi-k3" | "deepseek-v4-flash" | "local";
 
 export interface LaunchProfileOption {
   id: LaunchProfileId;
@@ -45,13 +45,19 @@ export const LAUNCH_PROFILE_OPTIONS: ReadonlyArray<LaunchProfileOption> = [
     label: "DeepSeek V4 Flash",
     description: "Launch an all-DeepSeek V4 Flash OMP profile",
   },
+  {
+    id: "local",
+    label: "Local",
+    description: "Launch Qwen3.8 27B Ridge through LM Studio on this Mac",
+  },
 ];
 
 export function isLaunchProfileId(value: unknown): value is LaunchProfileId {
   return value === "default"
     || value === "gpt-only"
     || value === "kimi-k3"
-    || value === "deepseek-v4-flash";
+    || value === "deepseek-v4-flash"
+    || value === "local";
 }
 
 export function launchProfileLabel(profile: LaunchProfileId | null | undefined): string {

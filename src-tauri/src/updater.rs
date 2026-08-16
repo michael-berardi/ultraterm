@@ -329,9 +329,9 @@ pub async fn install_app_update(app: AppHandle) -> Result<(), String> {
 
     // The swap happens only after this process exits: the helper waits on the
     // PID, moves the current bundle aside, installs the verified copy, and
-    // relaunches. If the copy fails, the previous bundle is restored so the
-    // app is never left missing. Terminal sessions stay alive in tmux
-    // throughout.
+    // relaunches. The backup remains until a *new* app PID is observed and
+    // stays alive for five seconds; failed launch/health checks restore it.
+    // Terminal sessions stay alive in tmux throughout.
     let pid = process::id();
     let backup = bundle.with_file_name(format!(".UltraTerm.previous-{}.app", process::id()));
     let script = format!(
@@ -350,32 +350,36 @@ pub async fn install_app_update(app: AppHandle) -> Result<(), String> {
          case \"$requirements\" in *certificate*OU*{team_id}*) ;; *) return 1 ;; esac; \
          /usr/sbin/spctl --assess --type execute \"$1\" >/dev/null 2>&1 || return 1; \
          }}; \
-         while kill -0 {pid} 2>/dev/null; do /bin/sleep 0.2; done; \
-         if ! verify_identity {source}; then /bin/rm -rf {staging}; exit 1; fi; \
-         /bin/rm -rf {backup}; \
-         if ! /bin/mv {target} {backup}; then /bin/rm -rf {staging}; exit 1; fi; \
-         if ! /usr/bin/ditto {source} {target}; then \
-         /bin/rm -rf {target}; \
-         /bin/mv {backup} {target} || exit 1; \
-         /usr/bin/open -n {target}; \
-         /bin/rm -rf {staging}; \
-         exit 1; \
-         fi; \
-         if ! verify_identity {target}; then \
-         /bin/rm -rf {target}; \
-         /bin/mv {backup} {target} || exit 1; \
-         /usr/bin/open -n {target}; \
-         /bin/rm -rf {staging}; \
-         exit 1; \
-         fi; \
-         /usr/bin/xattr -dr com.apple.quarantine {target} 2>/dev/null || true; \
-         if ! /usr/bin/open -n {target}; then \
+         rollback() {{ \
          /bin/rm -rf {target}; \
          /bin/mv {backup} {target} || exit 1; \
          /usr/bin/open -n {target} || true; \
          /bin/rm -rf {staging}; \
          exit 1; \
-         fi; \
+         }}; \
+         while kill -0 {pid} 2>/dev/null; do /bin/sleep 0.2; done; \
+         if ! verify_identity {source}; then /bin/rm -rf {staging}; exit 1; fi; \
+         /bin/rm -rf {backup}; \
+         if ! /bin/mv {target} {backup}; then /bin/rm -rf {staging}; exit 1; fi; \
+         if ! /usr/bin/ditto {source} {target}; then rollback; fi; \
+         if ! verify_identity {target}; then rollback; fi; \
+         /usr/bin/xattr -dr com.apple.quarantine {target} 2>/dev/null || true; \
+         existing_pids=\"$(/usr/bin/pgrep -f {target}/Contents/MacOS/ || true)\"; \
+         if ! /usr/bin/open -n {target}; then rollback; fi; \
+         new_pid=\"\"; \
+         for _ in $(/usr/bin/seq 1 50); do \
+           for candidate in $(/usr/bin/pgrep -f {target}/Contents/MacOS/ || true); do \
+             if [ \"$candidate\" = \"$$\" ]; then continue; fi; \
+             case \" $existing_pids \" in *\" $candidate \"*) ;; *) new_pid=\"$candidate\"; break ;; esac; \
+           done; \
+           [ -n \"$new_pid\" ] && break; \
+           /bin/sleep 0.2; \
+         done; \
+         [ -n \"$new_pid\" ] || rollback; \
+         for _ in $(/usr/bin/seq 1 25); do \
+           kill -0 \"$new_pid\" 2>/dev/null || rollback; \
+           /bin/sleep 0.2; \
+         done; \
          /bin/rm -rf {backup} {staging}",
         bundle_id = EXPECTED_BUNDLE_ID,
         team_id = EXPECTED_TEAM_ID,

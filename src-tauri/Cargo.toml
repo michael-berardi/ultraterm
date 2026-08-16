@@ -1,6 +1,6 @@
 [package]
 name = "ultraterm"
-version = "0.3.6"
+version = "0.3.7"
 description = "A unified liquid-glass OMP terminal workspace."
 authors = ["Liberty Design Studio"]
 edition = "2021"

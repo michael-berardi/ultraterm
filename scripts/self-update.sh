@@ -40,6 +40,29 @@ BUILD_QUEUE="${BUILD_QUEUE:-$HOME/dev/scripts/build_queue.py}"
 # The tauri CLI maps the CI env var onto its --ci flag and rejects CI=1.
 export CI=false
 
+launch_and_confirm_health() {
+  local app_path="$1" previous_pids new_pid candidate
+  previous_pids="$(pgrep -f "${app_path}/Contents/MacOS/" || true)"
+  open -n "$app_path" || return 1
+  new_pid=""
+  for _ in $(seq 1 50); do
+    for candidate in $(pgrep -f "${app_path}/Contents/MacOS/" || true); do
+      [[ "$candidate" == "$$" ]] && continue
+      case " ${previous_pids} " in
+        *" ${candidate} "*) ;;
+        *) new_pid="$candidate"; break ;;
+      esac
+    done
+    [[ -n "$new_pid" ]] && break
+    sleep 0.2
+  done
+  [[ -n "$new_pid" ]] || return 1
+  for _ in $(seq 1 25); do
+    kill -0 "$new_pid" 2>/dev/null || return 1
+    sleep 0.2
+  done
+}
+
 if [[ "$SKIP_BUILD" != "1" ]]; then
   if [[ -x "$(command -v python3 || true)" && -f "$BUILD_QUEUE" ]]; then
     python3 "$BUILD_QUEUE" --project "$ROOT_DIR" -- "${BUILD_CMD[@]}"
@@ -129,17 +152,23 @@ fi
 rm -rf "$APP_STAGE_ROOT"
 echo "Installed ${PRODUCT_NAME} to $INSTALL_PATH"
 
-if [[ "$RUNNING" == "1" || "${ALWAYS_RELAUNCH:-0}" == "1" ]]; then
-  if ! open -n "$INSTALL_PATH"; then
-    rm -rf "$INSTALL_PATH"
-    [[ ! -d "$APP_SWAP_BACKUP" ]] || mv "$APP_SWAP_BACKUP" "$INSTALL_PATH"
+restore_previous() {
+  rm -rf "$INSTALL_PATH"
+  if [[ -d "$APP_SWAP_BACKUP" ]]; then
+    mv "$APP_SWAP_BACKUP" "$INSTALL_PATH"
     open -n "$INSTALL_PATH" || true
-    echo "Unable to relaunch the new UltraTerm bundle; restored the previous copy." >&2
+  fi
+}
+
+if [[ "$RUNNING" == "1" || "${ALWAYS_RELAUNCH:-0}" == "1" ]]; then
+  if ! launch_and_confirm_health "$INSTALL_PATH"; then
+    restore_previous
+    echo "New UltraTerm failed PID/health confirmation; restored the previous copy." >&2
     exit 1
   fi
   rm -rf "$APP_SWAP_BACKUP"
-  echo "Relaunched ${PRODUCT_NAME}; terminal sessions reattach automatically."
+  echo "Relaunched ${PRODUCT_NAME}; new PID remained healthy for five seconds."
 else
-  rm -rf "$APP_SWAP_BACKUP"
-  echo "UltraTerm was not running; launch it with: open -n \"$INSTALL_PATH\""
+  echo "UltraTerm was not running; rollback copy retained at $APP_SWAP_BACKUP."
+  echo "Launch it with: open -n \"$INSTALL_PATH\""
 fi

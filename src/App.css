@@ -2458,10 +2458,18 @@ button:disabled {
   border-top-color: var(--glass-edge-bright);
   border-radius: var(--radius-window);
   background: var(--wallpaper);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   box-shadow:
     inset 0 1px 0 var(--glass-edge),
     0 var(--space-8) calc(var(--space-8) * 3) var(--glass-shadow);
   color: var(--text);
+}
+
+/* Token history is a flat surface: OLED stays pixel-black and never inherits
+   a future material treatment from the shared settings modal. */
+[data-theme="oled"] .history-modal {
+  background: #000;
 }
 
 .history-modal__header {

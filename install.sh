@@ -51,6 +51,31 @@ verify_app_identity() {
   /usr/bin/grep -Eq -- "certificate .*OU.*${TEAM_ID}" <<<"$requirements" || return 1
 }
 
+launch_and_confirm_health() {
+  local previous_pids new_pid candidate
+  previous_pids="$(pgrep -f "${APP_TARGET}/Contents/MacOS/" || true)"
+  open -n "$APP_TARGET" || return 1
+  new_pid=""
+  for _ in $(seq 1 50); do
+    for candidate in $(pgrep -f "${APP_TARGET}/Contents/MacOS/" || true); do
+      [[ "$candidate" == "$$" ]] && continue
+      case " ${previous_pids} " in
+        *" ${candidate} "*) ;;
+        *) new_pid="$candidate"; break ;;
+      esac
+    done
+    [[ -n "$new_pid" ]] && break
+    sleep 0.2
+  done
+  [[ -n "$new_pid" ]] || return 1
+  # Keep the verified backup until the new, previously unseen PID remains
+  # alive for five seconds.
+  for _ in $(seq 1 25); do
+    kill -0 "$new_pid" 2>/dev/null || return 1
+    sleep 0.2
+  done
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --user) INSTALL_SCOPE="user" ;;
@@ -168,21 +193,34 @@ fi
 if ! command -v tmux >/dev/null 2>&1; then
   echo "Warning: tmux is not on PATH. UltraTerm can run OMP directly, but sessions will not persist." >&2
 fi
-if [[ "$LAUNCH" == "1" ]] && ! open "$APP_TARGET"; then
+
+restore_previous() {
   if [[ "$INSTALL_SCOPE" == "system" ]]; then
     sudo rm -rf "$APP_TARGET"
-    [[ ! -d "$APP_BACKUP" ]] || sudo mv "$APP_BACKUP" "$APP_TARGET"
-    open "$APP_TARGET" || true
+    if [[ -d "$APP_BACKUP" ]]; then
+      sudo mv "$APP_BACKUP" "$APP_TARGET"
+      open -n "$APP_TARGET" || true
+    fi
   else
     rm -rf "$APP_TARGET"
-    [[ ! -d "$APP_BACKUP" ]] || mv "$APP_BACKUP" "$APP_TARGET"
-    open "$APP_TARGET" || true
+    if [[ -d "$APP_BACKUP" ]]; then
+      mv "$APP_BACKUP" "$APP_TARGET"
+      open -n "$APP_TARGET" || true
+    fi
   fi
-  echo "Unable to launch the new UltraTerm bundle; restored the previous copy." >&2
-  exit 1
-fi
-if [[ "$INSTALL_SCOPE" == "system" ]]; then
-  sudo rm -rf "$APP_BACKUP"
+}
+
+if [[ "$LAUNCH" == "1" ]]; then
+  if ! launch_and_confirm_health; then
+    restore_previous
+    echo "New UltraTerm failed PID/health confirmation; restored the previous copy." >&2
+    exit 1
+  fi
+  if [[ "$INSTALL_SCOPE" == "system" ]]; then
+    sudo rm -rf "$APP_BACKUP"
+  else
+    rm -rf "$APP_BACKUP"
+  fi
 else
-  rm -rf "$APP_BACKUP"
+  echo "UltraTerm was not launched; retaining rollback copy at $APP_BACKUP."
 fi
