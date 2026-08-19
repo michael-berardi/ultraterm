@@ -263,14 +263,25 @@ fn resolve_and_tail(
 /// Minimal VT scrubber for agent-facing inspection: drops CSI, OSC, and
 /// remaining escape sequences, keeps printable text and newlines. Not a
 /// screen parser — cursor-movement redraws appear as successive lines.
+/// Operates on the lossy-decoded text so multibyte UTF-8 survives.
 fn strip_ansi(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let bytes = text.as_bytes();
     let mut out = String::with_capacity(bytes.len());
     let mut index = 0;
     while index < bytes.len() {
         let byte = bytes[index];
         if byte != 0x1b {
             if byte == b'\n' || byte == b'\t' || byte >= 0x20 {
-                out.push_str(&String::from_utf8_lossy(&bytes[index..index + 1]));
+                // ASCII boundary: escape bytes are ASCII, so this index is a
+                // char boundary of the lossy-decoded string.
+                let mut end = index + 1;
+                while end < bytes.len() && bytes[end] >= 0x80 && bytes[end] < 0xc0 {
+                    end += 1;
+                }
+                out.push_str(&text[index..end]);
+                index = end;
+                continue;
             }
             index += 1;
             continue;
@@ -340,5 +351,11 @@ mod tests {
     fn strip_ansi_tolerates_truncated_sequences() {
         assert_eq!(strip_ansi(b"abc\x1b["), "abc");
         assert_eq!(strip_ansi(b"abc\x1b"), "abc");
+    }
+
+    #[test]
+    fn strip_ansi_preserves_multibyte_utf8() {
+        let raw = "│ 任务 ✓ │\x1b[32m✓\x1b[0m — 参数".as_bytes();
+        assert_eq!(strip_ansi(raw), "│ 任务 ✓ │✓ — 参数");
     }
 }
