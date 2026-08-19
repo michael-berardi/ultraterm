@@ -10,7 +10,6 @@ import {
   Gauge,
   Gamepad2,
   HardDrive,
-  History,
   LogOut,
   Mic,
   Maximize2,
@@ -518,58 +517,64 @@ export function WorkspaceRail({
             </div>
 
             <div
-              className="token-cache-summary"
-              aria-label="24-hour cache hit rates"
-              title="Cached input tokens divided by all input-side tokens during the past 24 hours"
+              className="token-telemetry-panel"
+              role="button"
+              tabIndex={0}
+              onClick={() => setHistoryOpen(true)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  setHistoryOpen(true);
+                }
+              }}
+              aria-label="View full token usage history"
+              title="View full token usage history"
             >
-              <span className="token-cache-summary__heading">24h cache hit</span>
-              <dl>
-                <div>
-                  <dt>Coding plan</dt>
-                  <dd>{formatCacheHitPercent(telemetry.past24HourChannels.subscription)}</dd>
-                </div>
-                <div>
-                  <dt>Paid API</dt>
-                  <dd>{formatCacheHitPercent(telemetry.past24HourChannels.paidApi)}</dd>
-                </div>
-                <div>
-                  <dt>Blended</dt>
-                  <dd>{formatCacheHitPercent(telemetry.past24Hours)}</dd>
-                </div>
-              </dl>
-            </div>
+              <div
+                className="token-cache-summary"
+                aria-label="24-hour cache hit rates"
+                title="Cached input tokens divided by all input-side tokens during the past 24 hours"
+              >
+                <span className="token-cache-summary__heading">24h cache hit</span>
+                <dl>
+                  <div>
+                    <dt>Coding plan</dt>
+                    <dd>{formatCacheHitPercent(telemetry.past24HourChannels.subscription)}</dd>
+                  </div>
+                  <div>
+                    <dt>Paid API</dt>
+                    <dd>{formatCacheHitPercent(telemetry.past24HourChannels.paidApi)}</dd>
+                  </div>
+                  <div>
+                    <dt>Blended</dt>
+                    <dd>{formatCacheHitPercent(telemetry.past24Hours)}</dd>
+                  </div>
+                </dl>
+              </div>
 
-            <div className="token-today">
-              <span className="token-today__label">Total today</span>
-              <CountUpTokens value={telemetry.today.total} />
-              <div className="token-channel-list" aria-label="Today's token channels">
-                <div className="token-channel-row">
-                  <span>Coding plan</span>
-                  <strong title={`${telemetry.todayChannels.subscription.total.toLocaleString()} coding-plan tokens today`}>
-                    {telemetry.todayChannels.subscription.total.toLocaleString()}
-                  </strong>
-                </div>
-                <div className="token-channel-row">
-                  <span>Paid API</span>
-                  <span className="token-channel-row__value">
-                    <strong title={`${telemetry.todayChannels.paidApi.total.toLocaleString()} paid API tokens today`}>
-                      {telemetry.todayChannels.paidApi.total.toLocaleString()}
+              <div className="token-today">
+                <span className="token-today__label">Total today</span>
+                <CountUpTokens value={telemetry.today.total} />
+                <div className="token-channel-list" aria-label="Today's token channels">
+                  <div className="token-channel-row">
+                    <span>Coding plan</span>
+                    <strong title={`${telemetry.todayChannels.subscription.total.toLocaleString()} coding-plan tokens today`}>
+                      {telemetry.todayChannels.subscription.total.toLocaleString()}
                     </strong>
-                    <small title="Estimated from the model rates in OMP">
-                      {formatUsd(telemetry.todayChannels.paidApiCostUsd)} today
-                    </small>
-                  </span>
+                  </div>
+                  <div className="token-channel-row">
+                    <span>Paid API</span>
+                    <span className="token-channel-row__value">
+                      <strong title={`${telemetry.todayChannels.paidApi.total.toLocaleString()} paid API tokens today`}>
+                        {telemetry.todayChannels.paidApi.total.toLocaleString()}
+                      </strong>
+                      <small title="Estimated from the model rates in OMP">
+                        {formatUsd(telemetry.todayChannels.paidApiCostUsd)} today
+                      </small>
+                    </span>
+                  </div>
                 </div>
               </div>
-              <button
-                type="button"
-                className="token-today__history"
-                onClick={() => setHistoryOpen(true)}
-                aria-label="View full token usage history"
-              >
-                <History size={11} />
-                <span>View history</span>
-              </button>
             </div>
           </section>
 

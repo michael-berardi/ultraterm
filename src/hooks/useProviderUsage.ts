@@ -17,6 +17,7 @@ const STALE_AFTER_MS = 150_000;
 export const USAGE_PROVIDERS: ReadonlyArray<{ id: UsageProviderId; name: string }> = [
   { id: "kimi", name: "Kimi" },
   { id: "codex", name: "Codex" },
+  { id: "codex-fallback", name: "Codex Fallback" },
   { id: "claude", name: "Claude" },
   { id: "zai", name: "ZAI" },
 ];
@@ -25,6 +26,7 @@ const PROVIDER_IDS = USAGE_PROVIDERS.map((provider) => provider.id);
 const PROVIDER_NAMES: Record<UsageProviderId, string> = {
   kimi: "Kimi",
   codex: "Codex",
+  "codex-fallback": "Codex Fallback",
   claude: "Claude",
   zai: "ZAI",
 };

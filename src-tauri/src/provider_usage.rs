@@ -52,18 +52,27 @@ static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
 });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
 pub enum ProviderId {
+    #[serde(rename = "kimi")]
     Kimi,
+    #[serde(rename = "codex")]
     Codex,
+    /// Secondary ChatGPT account used as the runtime fallback when the primary
+    /// Codex account exhausts its quota. Shares the Codex usage endpoint but
+    /// stores its own Keychain credential and renders its own sidebar dial.
+    #[serde(rename = "codex-fallback")]
+    CodexFallback,
+    #[serde(rename = "claude")]
     Claude,
+    #[serde(rename = "zai")]
     Zai,
 }
 
 impl ProviderId {
-    const ALL: [ProviderId; 4] = [
+    const ALL: [ProviderId; 5] = [
         ProviderId::Kimi,
         ProviderId::Codex,
+        ProviderId::CodexFallback,
         ProviderId::Claude,
         ProviderId::Zai,
     ];
@@ -72,6 +81,7 @@ impl ProviderId {
         match self {
             ProviderId::Kimi => "Kimi",
             ProviderId::Codex => "Codex",
+            ProviderId::CodexFallback => "Codex Fallback",
             ProviderId::Claude => "Claude",
             ProviderId::Zai => "Z.ai",
         }
@@ -80,7 +90,9 @@ impl ProviderId {
     fn endpoint(self) -> &'static str {
         match self {
             ProviderId::Kimi => "https://api.kimi.com/coding/v1/usages",
-            ProviderId::Codex => "https://chatgpt.com/backend-api/wham/usage",
+            ProviderId::Codex | ProviderId::CodexFallback => {
+                "https://chatgpt.com/backend-api/wham/usage"
+            }
             ProviderId::Claude => "https://api.anthropic.com/api/oauth/usage",
             ProviderId::Zai => "https://api.z.ai/api/monitor/usage/quota/limit",
         }
@@ -90,6 +102,7 @@ impl ProviderId {
         match self {
             ProviderId::Kimi => "provider-usage-kimi",
             ProviderId::Codex => "provider-usage-codex",
+            ProviderId::CodexFallback => "provider-usage-codex-fallback",
             ProviderId::Claude => "provider-usage-claude",
             ProviderId::Zai => "provider-usage-zai",
         }
@@ -99,7 +112,9 @@ impl ProviderId {
         match self {
             ProviderId::Kimi => Some(("--profile=kimi-k3", "kimi-code")),
             ProviderId::Codex => Some(("--profile=gpt-only", "openai-codex")),
-            ProviderId::Claude | ProviderId::Zai => None,
+            // The fallback account is never read back out of OMP: it is the
+            // secondary credential, explicitly supplied by the user.
+            ProviderId::CodexFallback | ProviderId::Claude | ProviderId::Zai => None,
         }
     }
 }
@@ -156,14 +171,26 @@ pub struct ProviderCredentialInput {
     pub provider: ProviderId,
     pub access_token: String,
     pub account_id: Option<String>,
+    /// OAuth refresh token, expiry (epoch ms), and account email. Required for
+    /// the Codex fallback account so OMP can keep using (and refreshing) the
+    /// credential long after the pasted access token expires.
+    pub refresh_token: Option<String>,
+    pub expires_at: Option<i64>,
+    pub email: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredCredential {
     access_token: String,
     #[serde(default)]
     account_id: Option<String>,
+    #[serde(default)]
+    refresh_token: Option<String>,
+    #[serde(default)]
+    expires_at: Option<i64>,
+    #[serde(default)]
+    email: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -258,22 +285,239 @@ pub async fn save_provider_credential(
     if access_token.is_empty() {
         return Err("Access token cannot be empty.".to_string());
     }
-    let account_id = input
-        .account_id
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
+    let clean = |value: Option<String>| {
+        value
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    let refresh_token = clean(input.refresh_token);
+    if input.provider == ProviderId::CodexFallback && refresh_token.is_none() {
+        return Err(
+            "The fallback account needs its OAuth refresh token — paste the full contents of its ~/.codex/auth.json."
+                .to_string(),
+        );
+    }
     let credential = StoredCredential {
         access_token,
-        account_id,
+        account_id: clean(input.account_id),
+        refresh_token,
+        expires_at: input.expires_at,
+        email: clean(input.email),
     };
     let usage = fetch_remote(input.provider, &credential).await?;
     write_credential(input.provider, &credential)?;
+    if input.provider == ProviderId::CodexFallback {
+        if let Err(error) = sync_codex_fallback_to_omp(&credential).await {
+            // Roll the Keychain write back so the card never claims a fallback
+            // that live terminals cannot actually rotate into.
+            let _ = delete_credential(input.provider);
+            return Err(error);
+        }
+    }
     Ok(usage)
 }
 
 #[tauri::command]
 pub async fn remove_provider_credential(provider: ProviderId) -> Result<(), String> {
-    delete_credential(provider)
+    // Read before deleting: OMP-side cleanup keys off the account identity.
+    let credential = read_credential(provider)?;
+    delete_credential(provider)?;
+    if provider == ProviderId::CodexFallback {
+        if let Some(credential) = credential {
+            remove_codex_fallback_from_omp(&credential)?;
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Codex fallback: OMP runtime sync
+// ---------------------------------------------------------------------------
+//
+// The sidebar dial only tracks the fallback account; the actual failover runs
+// through OMP. OMP stores one row per OAuth account in each profile's
+// `agent.db` and keeps sessions on the first (primary) credential until it
+// hits a usage-limit error, then rotates to a sibling (verified with
+// `omp dry-balance`: 100% of sampled sessions resolve to the primary while it
+// is healthy). Importing the fallback account as a second `openai-codex`
+// credential therefore yields exactly "use my account until it runs out, then
+// hers" semantics without touching ~/.codex/auth.json.
+
+/// Launch profiles whose OMP config routes models through openai-codex.
+/// deepseek-v4-flash and local never call Codex, so they are left alone.
+const OMP_CODEX_PROFILES: &[&str] = &["lds", "gpt-only", "kimi-k3"];
+
+/// Decoded payload of a JWT, shared by the account-id and expiry helpers.
+fn jwt_payload(token: &str) -> Option<Value> {
+    let encoded_payload = token.split('.').nth(1)?;
+    let payload = URL_SAFE_NO_PAD
+        .decode(encoded_payload)
+        .or_else(|_| URL_SAFE.decode(encoded_payload))
+        .ok()?;
+    serde_json::from_slice(&payload).ok()
+}
+
+/// Access-token expiry in epoch ms, derived from the JWT `exp` claim. Falls
+/// back to "already expired" so OMP refreshes the token before first use
+/// instead of trusting a stale access token.
+fn codex_fallback_expires_at(credential: &StoredCredential) -> i64 {
+    if let Some(expires_at) = credential.expires_at {
+        return expires_at;
+    }
+    jwt_payload(&credential.access_token)
+        .and_then(|claims| claims.get("exp").and_then(Value::as_i64).map(|exp| exp * 1000))
+        .unwrap_or_else(now_epoch_ms)
+}
+
+fn codex_fallback_import_payload(credential: &StoredCredential) -> Result<String, String> {
+    let refresh_token = credential.refresh_token.as_deref().ok_or(
+        "The fallback account is missing its refresh token; save it again from Settings.",
+    )?;
+    let expires_at = chrono::DateTime::from_timestamp_millis(codex_fallback_expires_at(credential))
+        .map(|timestamp| timestamp.to_rfc3339())
+        .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_string());
+    let mut payload = serde_json::json!({
+        // `type: "codex"` is how `omp auth-broker import` recognizes a ChatGPT
+        // OAuth credential for its openai-codex provider.
+        "type": "codex",
+        "access_token": credential.access_token,
+        "refresh_token": refresh_token,
+        "expired": expires_at,
+    });
+    if let Some(account_id) = credential.account_id.as_deref() {
+        payload["account_id"] = Value::String(account_id.to_string());
+    }
+    if let Some(email) = credential.email.as_deref() {
+        payload["email"] = Value::String(email.to_string());
+    }
+    serde_json::to_string(&payload)
+        .map_err(|error| format!("Could not serialize the fallback credential: {error}"))
+}
+
+fn omp_profile_agent_db(home: &std::path::Path, profile: &str) -> std::path::PathBuf {
+    home.join(".omp")
+        .join("profiles")
+        .join(profile)
+        .join("agent")
+        .join("agent.db")
+}
+
+/// Import the fallback credential into every Codex-using OMP profile so live
+/// terminals rotate onto it when the primary account hits its usage limit.
+/// Import is idempotent per account identity, so re-saving updates in place.
+async fn sync_codex_fallback_to_omp(credential: &StoredCredential) -> Result<(), String> {
+    let omp = crate::resolve_optional_executable("OMP_BIN", "omp", &[])
+        .map_err(|error| format!("Could not locate the omp binary: {error}"))?
+        .ok_or(
+            "The omp binary was not found, so the fallback account could not be registered with OMP."
+                .to_string(),
+        )?;
+    let payload = codex_fallback_import_payload(credential)?;
+
+    // Secrets cross the process boundary through a 0600 temp file, never the
+    // command line (argv is visible to every process on the machine).
+    let temp_path = std::env::temp_dir().join(format!(
+        "ultraterm-codex-fallback-{}.json",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::write(&temp_path, &payload)
+        .map_err(|error| format!("Could not stage the fallback credential: {error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&temp_path, std::fs::Permissions::from_mode(0o600));
+    }
+
+    let mut failures = Vec::new();
+    for profile in OMP_CODEX_PROFILES {
+        let mut command = tokio::process::Command::new(&omp);
+        command
+            .args([
+                &format!("--profile={profile}"),
+                "auth-broker",
+                "import",
+            ])
+            .arg(&temp_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let result = tokio::time::timeout(REQUEST_TIMEOUT, command.output()).await;
+        match result {
+            Ok(Ok(output)) if output.status.success() => {}
+            Ok(Ok(output)) => {
+                let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                failures.push(format!("{profile}: {}", if detail.is_empty() {
+                    format!("omp exited with {}", output.status)
+                } else {
+                    detail
+                }));
+            }
+            Ok(Err(error)) => failures.push(format!("{profile}: {error}")),
+            Err(_) => failures.push(format!("{profile}: omp import timed out")),
+        }
+    }
+    let _ = std::fs::remove_file(&temp_path);
+
+    if failures.is_empty() {
+        eprintln!(
+            "[ultraterm] codex fallback account synced into OMP profiles: {}",
+            OMP_CODEX_PROFILES.join(", ")
+        );
+        Ok(())
+    } else {
+        Err(format!(
+            "The fallback account could not be registered with OMP ({}) — live terminals will not fail over to it.",
+            failures.join("; ")
+        ))
+    }
+}
+
+/// Remove the fallback credential from each OMP profile's auth store. OMP
+/// exposes no non-interactive per-account logout, so this deletes the row by
+/// identity key directly; the store's own triggers bump the change revision so
+/// running OMP instances pick the removal up.
+fn remove_codex_fallback_from_omp(credential: &StoredCredential) -> Result<(), String> {
+    let Some(email) = credential.email.as_deref() else {
+        // Without an email there is no stable identity to delete by; the
+        // credential was likely never synced into OMP either.
+        eprintln!("[ultraterm] codex fallback credential has no email; skipping OMP cleanup");
+        return Ok(());
+    };
+    let identity_key = format!("email:{email}");
+    let home = crate::home_dir()?;
+    let mut failures = Vec::new();
+    for profile in OMP_CODEX_PROFILES {
+        let db_path = omp_profile_agent_db(&home, profile);
+        if !db_path.exists() {
+            continue;
+        }
+        let outcome = rusqlite::Connection::open(&db_path).and_then(|connection| {
+            connection.busy_timeout(Duration::from_secs(5))?;
+            connection.execute(
+                "DELETE FROM auth_credential_blocks WHERE credential_id IN (
+                    SELECT id FROM auth_credentials
+                    WHERE provider = 'openai-codex' AND identity_key = ?1
+                )",
+                [&identity_key],
+            )?;
+            connection.execute(
+                "DELETE FROM auth_credentials WHERE provider = 'openai-codex' AND identity_key = ?1",
+                [&identity_key],
+            )
+        });
+        if let Err(error) = outcome {
+            failures.push(format!("{profile}: {error}"));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "The fallback account was disconnected here, but OMP cleanup failed ({}) — remove it from OMP manually.",
+            failures.join("; ")
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -281,12 +525,7 @@ pub async fn remove_provider_credential(provider: ProviderId) -> Result<(), Stri
 // ---------------------------------------------------------------------------
 
 fn codex_account_id(access_token: &str) -> Option<String> {
-    let encoded_payload = access_token.split('.').nth(1)?;
-    let payload = URL_SAFE_NO_PAD
-        .decode(encoded_payload)
-        .or_else(|_| URL_SAFE.decode(encoded_payload))
-        .ok()?;
-    let claims: Value = serde_json::from_slice(&payload).ok()?;
+    let claims = jwt_payload(access_token)?;
     let claims = claims.as_object()?;
     let account_id = claims
         .get("chatgpt_account_id")
@@ -315,8 +554,17 @@ async fn read_omp_credential(provider: ProviderId) -> Option<StoredCredential> {
         .ok()
         .flatten()?;
     let mut command = tokio::process::Command::new(omp);
+    // Codex only: pin the FIRST stored account. Without this, once a fallback
+    // account exists omp rotates round-robin and the primary dial would
+    // randomly show the fallback account's quota under the primary's name.
+    // (Other providers must not get the flag — e.g. kimi-code rejects
+    // `--account 1` with "OAuth access unavailable".)
+    let args: Vec<&str> = match provider {
+        ProviderId::Codex => vec![profile_argument, "token", token_provider, "--account", "1"],
+        _ => vec![profile_argument, "token", token_provider],
+    };
     command
-        .args([profile_argument, "token", token_provider])
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -334,11 +582,14 @@ async fn read_omp_credential(provider: ProviderId) -> Option<StoredCredential> {
     }
     let account_id = match provider {
         ProviderId::Codex => codex_account_id(&access_token),
-        ProviderId::Kimi | ProviderId::Claude | ProviderId::Zai => None,
+        ProviderId::Kimi | ProviderId::CodexFallback | ProviderId::Claude | ProviderId::Zai => None,
     };
     Some(StoredCredential {
         access_token,
         account_id,
+        refresh_token: None,
+        expires_at: None,
+        email: None,
     })
 }
 
@@ -376,7 +627,7 @@ async fn fetch_remote(
                 .header(AUTHORIZATION, token)
                 .header(ACCEPT, "application/json");
         }
-        ProviderId::Kimi | ProviderId::Codex | ProviderId::Claude => {
+        ProviderId::Kimi | ProviderId::Codex | ProviderId::CodexFallback | ProviderId::Claude => {
             let bearer =
                 HeaderValue::from_str(&format!("Bearer {}", credential.access_token.trim()))
                     .map_err(|_| {
@@ -387,7 +638,7 @@ async fn fetch_remote(
         }
     }
     match provider {
-        ProviderId::Codex => {
+        ProviderId::Codex | ProviderId::CodexFallback => {
             if let Some(account_id) = credential.account_id.as_deref() {
                 let value = HeaderValue::from_str(account_id).map_err(|_| {
                     "Account ID contains characters that are not valid in an HTTP header."
@@ -416,7 +667,7 @@ async fn fetch_remote(
                 ProviderId::Claude => {
                     " — this endpoint requires a Claude subscription OAuth token; API keys do not work"
                 }
-                ProviderId::Codex => {
+                ProviderId::Codex | ProviderId::CodexFallback => {
                     " — this endpoint requires a ChatGPT OAuth access token; API keys do not work"
                 }
                 _ => " — reconnect with a fresh access token",
@@ -435,7 +686,9 @@ async fn fetch_remote(
 
     let windows = match provider {
         ProviderId::Kimi => collect_kimi_windows(&body),
-        ProviderId::Codex | ProviderId::Claude | ProviderId::Zai => collect_windows(&body, 0),
+        ProviderId::Codex | ProviderId::CodexFallback | ProviderId::Claude | ProviderId::Zai => {
+            collect_windows(&body, 0)
+        }
     };
     let plan = pick_plan(&body);
     let balance = pick_balance(&body);
@@ -873,6 +1126,88 @@ mod tests {
         );
         assert_eq!(ProviderId::Claude.omp_auth_source(), None);
         assert_eq!(ProviderId::Zai.omp_auth_source(), None);
+        // The fallback account is user-supplied only; it is never read back
+        // out of OMP, where the same identity lives as a sibling credential.
+        assert_eq!(ProviderId::CodexFallback.omp_auth_source(), None);
+    }
+
+    #[test]
+    fn codex_fallback_serde_and_keychain_identity() {
+        assert_eq!(
+            serde_json::to_string(&ProviderId::CodexFallback).unwrap(),
+            "\"codex-fallback\""
+        );
+        assert_eq!(
+            serde_json::from_str::<ProviderId>("\"codex-fallback\"").unwrap(),
+            ProviderId::CodexFallback
+        );
+        // Distinct Keychain slots keep the primary and fallback credentials
+        // from clobbering each other.
+        assert_ne!(
+            ProviderId::Codex.keychain_account(),
+            ProviderId::CodexFallback.keychain_account()
+        );
+    }
+
+    #[test]
+    fn codex_fallback_expiry_prefers_stored_then_jwt_then_now() {
+        let base = StoredCredential {
+            access_token: "not-a-jwt".to_string(),
+            account_id: None,
+            refresh_token: Some("refresh".to_string()),
+            expires_at: Some(1_800_000_000_000),
+            email: None,
+        };
+        assert_eq!(codex_fallback_expires_at(&base), 1_800_000_000_000);
+
+        let claims = serde_json::to_vec(&json!({ "exp": 1_800_000_000_i64 })).unwrap();
+        let payload = URL_SAFE_NO_PAD.encode(claims);
+        let jwt = StoredCredential {
+            access_token: format!("header.{payload}.signature"),
+            expires_at: None,
+            ..base.clone()
+        };
+        assert_eq!(codex_fallback_expires_at(&jwt), 1_800_000_000_000);
+
+        let no_expiry = StoredCredential {
+            expires_at: None,
+            ..base
+        };
+        // No stored expiry and no JWT claim → "already expired" so OMP
+        // refreshes via the refresh token before first use.
+        assert!(codex_fallback_expires_at(&no_expiry) <= now_epoch_ms());
+    }
+
+    #[test]
+    fn codex_fallback_import_payload_matches_omp_importer_contract() {
+        let credential = StoredCredential {
+            access_token: "access".to_string(),
+            account_id: Some("account-1".to_string()),
+            refresh_token: Some("refresh".to_string()),
+            expires_at: Some(1_800_000_000_000),
+            email: Some("wife@example.com".to_string()),
+        };
+        let payload: Value =
+            serde_json::from_str(&codex_fallback_import_payload(&credential).unwrap()).unwrap();
+        // `type: "codex"` maps to omp's openai-codex provider; `expired` must
+        // be an ISO-8601 string the importer can Date.parse.
+        assert_eq!(payload["type"], "codex");
+        assert_eq!(payload["access_token"], "access");
+        assert_eq!(payload["refresh_token"], "refresh");
+        assert_eq!(
+            chrono::DateTime::parse_from_rfc3339(payload["expired"].as_str().unwrap())
+                .unwrap()
+                .timestamp_millis(),
+            1_800_000_000_000
+        );
+        assert_eq!(payload["account_id"], "account-1");
+        assert_eq!(payload["email"], "wife@example.com");
+
+        let no_refresh = StoredCredential {
+            refresh_token: None,
+            ..credential
+        };
+        assert!(codex_fallback_import_payload(&no_refresh).is_err());
     }
 
     #[test]

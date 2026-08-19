@@ -3,6 +3,7 @@ import { Fuel, RefreshCw, Settings } from "lucide-react";
 import {
   formatResetLabel,
   isUsageStale,
+  primaryWindow,
   usageStatusLabel,
   useProviderUsage,
 } from "../hooks/useProviderUsage";
@@ -26,6 +27,33 @@ export function displayWindow(usage: ProviderUsage): ProviderUsageWindow | null 
 
 export function remainingPercent(window: ProviderUsageWindow): number {
   return Math.min(100, Math.max(0, 100 - window.usedPercent));
+}
+
+/**
+ * The sidebar shows ONE Codex dial. While the primary account's weekly quota
+ * reads empty and the fallback account is healthy, the dial silently presents
+ * the fallback account's windows instead — and flips back as soon as the
+ * primary quota resets. The fallback never gets its own dial.
+ */
+export function codexDialSource(
+  primary: ProviderUsage,
+  fallback: ProviderUsage | undefined,
+): { usage: ProviderUsage; isBackup: boolean } {
+  const primaryWindow = displayWindow(primary);
+  const primaryEmpty = primaryWindow !== null && remainingPercent(primaryWindow) <= 0;
+  // The fallback's plan may not report a weekly window at all (pro-lite
+  // accounts only expose a rolling 5-hour window), so readiness just needs
+  // any live window — the dial falls back to the most constraining one.
+  const fallbackReady = fallback !== undefined
+    && fallback.status === "connected"
+    && !isUsageStale(fallback)
+    && fallback.windows.length > 0;
+  if (primaryEmpty && fallbackReady) {
+    // Label must say Fallback outright — showing the backup under the plain
+    // "Codex" name would mislead about which account is being spent.
+    return { usage: { ...fallback, displayName: `${primary.displayName} Fallback` }, isBackup: true };
+  }
+  return { usage: primary, isBackup: false };
 }
 
 export function formatUsageWindowLabel(label: string): string {
@@ -114,11 +142,17 @@ function dialAriaSummary(
 function UsageDial({
   usage,
   preferences,
+  isBackup = false,
+  dialWindow,
 }: {
   usage: ProviderUsage;
   preferences: ProviderUsagePreferences;
+  isBackup?: boolean;
+  /** Overrides the weekly default — used when the backup account's plan only
+   *  reports shorter windows. */
+  dialWindow?: ProviderUsageWindow;
 }): ReactElement | null {
-  const window = displayWindow(usage);
+  const window = dialWindow ?? displayWindow(usage);
   if (!window) return null;
   const remaining = remainingPercent(window);
   const danger = remaining <= LOW_REMAINING_THRESHOLD;
@@ -132,13 +166,15 @@ function UsageDial({
     <div
       className="usage-dial usage-dial--connected"
       role="group"
-      aria-label={dialAriaSummary(usage, window, preferences, pace)}
+      aria-label={(isBackup ? "Backup account active. " : "") + dialAriaSummary(usage, window, preferences, pace)}
     >
       <div className="usage-dial__header">
         <span className="usage-dial__name">{usage.displayName}</span>
         <span
           className="usage-dial__status usage-dial__status--connected"
-          title={usageStatusLabel(usage, false)}
+          title={isBackup
+            ? "Primary account is out of quota — showing the fallback account until it resets"
+            : usageStatusLabel(usage, false)}
         />
       </div>
 
@@ -224,8 +260,12 @@ export function UsageDials({
   onOpenSettings?: () => void;
 }): ReactElement {
   const { usages, loading, refreshing, error, refresh } = useProviderUsage();
+  const fallback = usages.find((usage) => usage.provider === "codex-fallback");
   const connected = usages.filter(
-    (usage) => usage.status === "connected" && !isUsageStale(usage) && displayWindow(usage) !== null,
+    (usage) => usage.provider !== "codex-fallback"
+      && usage.status === "connected"
+      && !isUsageStale(usage)
+      && displayWindow(usage) !== null,
   );
 
   let usageContent: ReactElement;
@@ -244,9 +284,23 @@ export function UsageDials({
   } else {
     usageContent = (
       <div className="usage-dials">
-        {connected.map((usage) => (
-          <UsageDial key={usage.provider} usage={usage} preferences={preferences} />
-        ))}
+        {connected.map((usage) => {
+          if (usage.provider === "codex") {
+            const source = codexDialSource(usage, fallback);
+            return (
+              <UsageDial
+                key={usage.provider}
+                usage={source.usage}
+                preferences={preferences}
+                isBackup={source.isBackup}
+                dialWindow={source.isBackup
+                  ? displayWindow(source.usage) ?? primaryWindow(source.usage) ?? undefined
+                  : undefined}
+              />
+            );
+          }
+          return <UsageDial key={usage.provider} usage={usage} preferences={preferences} />;
+        })}
       </div>
     );
   }

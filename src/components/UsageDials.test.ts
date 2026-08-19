@@ -1,10 +1,64 @@
 import { describe, expect, it } from "vitest";
 import {
+  codexDialSource,
   displayWindow,
   formatUsageWindowLabel,
   paceDialGeometry,
   remainingPercent,
 } from "./UsageDials";
+import type { ProviderUsage } from "../types";
+
+function codexUsage(usedPercent: number, provider: "codex" | "codex-fallback" = "codex"): ProviderUsage {
+  return {
+    provider,
+    displayName: provider === "codex" ? "Codex" : "Codex Fallback",
+    plan: null,
+    status: "connected",
+    windows: [
+      { label: "5-hour", usedPercent: 10, resetsAt: null },
+      { label: "Weekly", usedPercent, resetsAt: null },
+    ],
+    balance: null,
+    updatedAt: Date.now(),
+    error: null,
+  };
+}
+
+describe("codexDialSource", () => {
+  it("shows the primary account while its weekly quota remains", () => {
+    const source = codexDialSource(codexUsage(40), codexUsage(5, "codex-fallback"));
+    expect(source.isBackup).toBe(false);
+    expect(source.usage.provider).toBe("codex");
+  });
+
+  it("switches to the fallback account when the primary weekly quota is empty", () => {
+    const source = codexDialSource(codexUsage(100), codexUsage(5, "codex-fallback"));
+    expect(source.isBackup).toBe(true);
+    expect(source.usage.provider).toBe("codex-fallback");
+    // The dial must be unmistakably labeled as the fallback account.
+    expect(source.usage.displayName).toBe("Codex Fallback");
+  });
+
+  it("stays on an empty primary when no fallback is connected", () => {
+    expect(codexDialSource(codexUsage(100), undefined).isBackup).toBe(false);
+    const disconnected = { ...codexUsage(0, "codex-fallback"), status: "disconnected" as const };
+    expect(codexDialSource(codexUsage(100), disconnected).isBackup).toBe(false);
+  });
+
+  it("stays on an empty primary when the fallback data is stale", () => {
+    const stale = { ...codexUsage(5, "codex-fallback"), status: "stale" as const };
+    expect(codexDialSource(codexUsage(100), stale).isBackup).toBe(false);
+  });
+
+  it("switches to a fallback whose plan only reports a five-hour window", () => {
+    const fiveHourOnly: ProviderUsage = {
+      ...codexUsage(44, "codex-fallback"),
+      windows: [{ label: "5-hour", usedPercent: 44, resetsAt: null }],
+    };
+    const source = codexDialSource(codexUsage(100), fiveHourOnly);
+    expect(source.isBackup).toBe(true);
+  });
+});
 
 describe("formatUsageWindowLabel", () => {
   it("shows minute-based five-hour windows in human units", () => {

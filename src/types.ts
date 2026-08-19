@@ -181,7 +181,7 @@ export interface TokenTelemetry {
   updatedAt: number;
 }
 
-export type UsageProviderId = "kimi" | "codex" | "claude" | "zai";
+export type UsageProviderId = "kimi" | "codex" | "codex-fallback" | "claude" | "zai";
 export type ProviderUsageStatus = "connected" | "loading" | "stale" | "error" | "disconnected";
 
 export interface ProviderUsageWindow {
@@ -205,6 +205,15 @@ export interface ProviderCredentialInput {
   provider: UsageProviderId;
   accessToken: string;
   accountId?: string;
+  /**
+   * Codex fallback accounts only: the full OAuth token set parsed from the
+   * account's ~/.codex/auth.json, so OMP can keep refreshing the credential
+   * after the pasted access token expires.
+   */
+  refreshToken?: string;
+  /** Access-token expiry in epoch milliseconds. */
+  expiresAt?: number;
+  email?: string;
 }
 
 export interface MaintenanceTaskReport {

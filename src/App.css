@@ -1441,31 +1441,21 @@ button:disabled {
   }
 }
 
-.token-today__history {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  min-height: 24px;
-  padding: 0 9px;
-  border: 1px solid var(--control-border);
-  border-radius: 8px;
-  background: var(--control-fill);
-  color: var(--text-soft);
+.token-telemetry-panel {
+  display: grid;
+  gap: 6px;
+  border-radius: 12px;
   cursor: pointer;
-  font-size: 10px;
-  font-weight: 620;
 }
 
-.token-today__history:hover {
+.token-telemetry-panel:hover .token-today {
   border-color: var(--control-border-strong);
-  background: var(--control-fill-hover);
-  color: var(--text);
+  background: rgba(0, 0, 0, 0.2);
 }
 
-.token-today__history:focus-visible {
+.token-telemetry-panel:focus-visible {
   outline: 2px solid var(--accent-soft);
-  outline-offset: 1px;
+  outline-offset: 2px;
 }
 
 .settings-overlay {
@@ -3212,7 +3202,8 @@ button:disabled {
   letter-spacing: 0.03em;
 }
 
-.provider-card__field input {
+.provider-card__field input,
+.provider-card__field textarea {
   width: 100%;
   height: var(--space-8);
   padding: 0 var(--space-2);
@@ -3223,17 +3214,31 @@ button:disabled {
   font-size: 11px;
 }
 
-.provider-card__field input:hover {
+.provider-card__field textarea {
+  height: auto;
+  min-height: 76px;
+  padding: var(--space-2);
+  resize: vertical;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  line-height: 1.45;
+  word-break: break-all;
+}
+
+.provider-card__field input:hover,
+.provider-card__field textarea:hover {
   border-color: var(--control-border-strong);
 }
 
-.provider-card__field input:focus-visible {
+.provider-card__field input:focus-visible,
+.provider-card__field textarea:focus-visible {
   border-color: var(--control-border-strong);
   outline: 2px solid var(--accent-soft);
   outline-offset: 1px;
 }
 
-.provider-card__field input:disabled {
+.provider-card__field input:disabled,
+.provider-card__field textarea:disabled {
   opacity: 0.55;
 }
 
