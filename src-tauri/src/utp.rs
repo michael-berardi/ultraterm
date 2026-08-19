@@ -11,7 +11,8 @@
 //! - `{"cmd":"inspect","id"|"slot":…,"lines":N,"raw":bool}` — tail of the
 //!   session's PTY output ring buffer, ANSI-scrubbed unless `raw`.
 //! - `{"cmd":"send","id"|"slot":…,"text":"…","enter":bool}` — queue input to
-//!   the session's PTY (control/debug). `enter` defaults to true.
+//!   the session's PTY (control/debug). `enter` defaults to true and sends
+//!   carriage return, matching what TUIs expect for Enter.
 //! - `{"cmd":"message","to":slot,"from":slot,"text":"…"}` — an explicitly
 //!   addressed message shown as a banner on the target terminal only. There
 //!   is no broadcast: a message exists only when one terminal asks for it.
@@ -190,7 +191,9 @@ fn handle_request(
             };
             let mut bytes = text.as_bytes().to_vec();
             if request.enter.unwrap_or(true) {
-                bytes.push(b'\n');
+                // TUIs read Enter as carriage return in raw mode; LF only
+                // lands in the input box without submitting.
+                bytes.push(b'\r');
             }
             let mut manager = match manager.lock() {
                 Ok(manager) => manager,
