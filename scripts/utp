@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""utp — UltraTerm Protocol CLI.
+
+Control socket for UltraTerm terminals: list sessions, inspect a terminal's
+recent output, send input to a terminal, and pass explicitly addressed
+messages between terminals. Speaks JSON Lines to ~/.ultraterm/utp.sock.
+
+Usage:
+  utp list                              # all attached terminals (slot, id, title, profile)
+  utp inspect --slot 2 [--lines 80] [--raw]
+  utp send --slot 2 "ls -la"            # queues text + Enter to that PTY
+  utp message --from 1 --to 2 "tests are green"
+"""
+
+import argparse
+import json
+import os
+import socket
+import sys
+
+SOCKET_PATH = os.path.expanduser("~/.ultraterm/utp.sock")
+
+
+def call(request: dict) -> dict:
+    if not os.path.exists(SOCKET_PATH):
+        sys.exit(f"utp: UltraTerm control socket not found at {SOCKET_PATH} (is UltraTerm running?)")
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(10)
+        sock.connect(SOCKET_PATH)
+        sock.sendall(json.dumps(request).encode() + b"\n")
+        chunks = []
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            if b"\n" in chunk:
+                break
+    finally:
+        sock.close()
+    line = b"".join(chunks).split(b"\n", 1)[0]
+    if not line:
+        sys.exit("utp: empty response from UltraTerm")
+    return json.loads(line)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="utp", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("list", help="list attached terminals")
+
+    inspect = sub.add_parser("inspect", help="show recent output of a terminal")
+    inspect.add_argument("--slot", type=int)
+    inspect.add_argument("--id")
+    inspect.add_argument("--lines", type=int, default=80)
+    inspect.add_argument("--raw", action="store_true")
+
+    send = sub.add_parser("send", help="send input to a terminal's PTY")
+    send.add_argument("--slot", type=int)
+    send.add_argument("--id")
+    send.add_argument("text")
+    send.add_argument("--no-enter", action="store_true")
+
+    message = sub.add_parser("message", help="show an addressed message banner on another terminal")
+    message.add_argument("--from", dest="from_slot", type=int, required=True)
+    message.add_argument("--to", type=int, required=True)
+    message.add_argument("text")
+
+    args = parser.parse_args()
+
+    if args.cmd == "list":
+        response = call({"cmd": "list"})
+        if not response.get("ok"):
+            sys.exit(f"utp: {response.get('error')}")
+        for session in sorted(response["sessions"], key=lambda s: s["slot"]):
+            profile = session.get("launchProfile", "default")
+            omp = "omp" if session.get("launchedOmp") else "shell"
+            print(f"{session['slot']}\t{session['title']}\t{omp}\t{profile}\t{session['id']}")
+        return
+
+    if args.cmd == "inspect":
+        request = {"cmd": "inspect", "lines": args.lines, "raw": args.raw}
+        if args.slot:
+            request["slot"] = args.slot
+        elif args.id:
+            request["id"] = args.id
+        else:
+            sys.exit("utp inspect: --slot or --id required")
+        response = call(request)
+        if not response.get("ok"):
+            sys.exit(f"utp: {response.get('error')}")
+        print(response["text"])
+        return
+
+    if args.cmd == "send":
+        request = {"cmd": "send", "text": args.text, "enter": not args.no_enter}
+        if args.slot:
+            request["slot"] = args.slot
+        elif args.id:
+            request["id"] = args.id
+        else:
+            sys.exit("utp send: --slot or --id required")
+        response = call(request)
+        if not response.get("ok"):
+            sys.exit(f"utp: {response.get('error')}")
+        return
+
+    if args.cmd == "message":
+        response = call({"cmd": "message", "from": args.from_slot, "to": args.to, "text": args.text})
+        if not response.get("ok"):
+            sys.exit(f"utp: {response.get('error')}")
+        return
+
+
+if __name__ == "__main__":
+    main()

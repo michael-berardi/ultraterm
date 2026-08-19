@@ -23,6 +23,7 @@ import type {
   TokenTelemetry,
   TerminalController,
   TerminalExitEvent,
+  TerminalMessageEvent,
   TerminalOutputEvent,
   WorkspaceSession,
 } from "../types";
@@ -367,6 +368,13 @@ export function useTerminalWorkspace(sessionCap: number) {
               : session,
           ),
         );
+      }),
+      // utp: an addressed message from another terminal surfaces as the
+      // workspace notice banner. Messages exist only when a terminal
+      // explicitly sends one — there is no ambient channel.
+      listen<TerminalMessageEvent>("terminal-message", ({ payload }) => {
+        if (!active) return;
+        setNotice(`Terminal ${payload.fromSlot} → Terminal ${payload.toSlot}: ${payload.text}`);
       }),
     ];
     listenersReady.current = Promise.all(unlistenPromises).then(() => undefined);

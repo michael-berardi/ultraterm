@@ -1,10 +1,12 @@
 mod app_telemetry;
 mod history;
+mod local_model;
 mod maintenance;
 mod provider_usage;
 mod telemetry;
-mod ultravox_client;
 mod updater;
+mod ultravox_client;
+mod utp;
 
 // UltraTerm Rust backend — single-window Tauri 2 workspace with multiple PTY sessions.
 //
@@ -75,6 +77,19 @@ impl LaunchProfile {
     }
 }
 
+/// True when the removed session was a local-profile OMP terminal and no other
+/// attached session still needs the local model. Plain shell sessions carry a
+/// launch profile value too, so callers must gate on `launched_omp`.
+fn should_unload_local_model(
+    removed_was_local: bool,
+    mut remaining: impl Iterator<Item = (bool, LaunchProfile)>,
+) -> bool {
+    removed_was_local
+        && !remaining.any(|(launched_omp, profile)| {
+            launched_omp && profile == LaunchProfile::Local
+        })
+}
+
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionInfo {
@@ -132,6 +147,9 @@ struct Session {
     // can never block keystroke IPC on the main thread. The channel preserves
     // exact keystroke order.
     writer: mpsc::Sender<Vec<u8>>,
+    // Raw PTY output ring buffer for utp `inspect`; fed by the reader
+    // thread, capped by OutputTail.
+    output_tail: Arc<Mutex<utp::OutputTail>>,
     child: Box<dyn Child + Send + Sync>,
     reader_handle: Option<thread::JoinHandle<()>>,
     writer_handle: Option<thread::JoinHandle<()>>,
@@ -266,6 +284,7 @@ impl SessionManager {
         let (writer_tx, writer_rx) = mpsc::channel::<Vec<u8>>();
         let writer_handle = thread::spawn(move || writer_thread(writer, writer_rx));
 
+        let output_tail = Arc::new(Mutex::new(utp::OutputTail::new()));
         let session = Session {
             id: id.clone(),
             slot: request.slot,
@@ -275,14 +294,21 @@ impl SessionManager {
             launch_profile,
             master: pair.master,
             writer: writer_tx,
+            output_tail: output_tail.clone(),
             child,
             reader_handle: None,
             writer_handle: Some(writer_handle),
         };
         self.sessions.insert(id.clone(), session);
 
+        // Local profile: start the mtplx daemon in the background so the model
+        // is serving by the first prompt. Never blocks session creation.
+        if launched_omp && launch_profile == LaunchProfile::Local {
+            local_model::ensure_loaded();
+        }
+
         let handle = thread::spawn(move || {
-            reader_thread(session_id_for_thread, app, cleanup_tx, reader);
+            reader_thread(session_id_for_thread, app, cleanup_tx, reader, output_tail);
         });
 
         if let Some(session) = self.sessions.get_mut(&id) {
@@ -312,11 +338,43 @@ impl SessionManager {
         let bytes = STANDARD
             .decode(data)
             .map_err(|e| format!("Invalid base64 input: {}", e))?;
+        self.queue_input_bytes(id, &bytes)
+    }
+
+    /// utp: resolve a session by UUID or by user-facing slot ("Terminal N").
+    fn resolve_session_id(&self, id: Option<&str>, slot: Option<u32>) -> Option<String> {
+        if let Some(id) = id {
+            return self.sessions.contains_key(id).then(|| id.to_string());
+        }
+        slot.and_then(|slot| {
+            self.sessions
+                .values()
+                .find(|session| session.slot == slot)
+                .map(|session| session.id.clone())
+        })
+    }
+
+    /// utp: queue raw input bytes to a session's PTY writer.
+    fn queue_input_bytes(&mut self, id: &str, bytes: &[u8]) -> Result<(), String> {
+        let session = self
+            .sessions
+            .get_mut(id)
+            .ok_or_else(|| format!("Session {} not found", id))?;
         session
             .writer
-            .send(bytes)
+            .send(bytes.to_vec())
             .map_err(|e| format!("Failed to queue input for session {}: {}", id, e))?;
         Ok(())
+    }
+
+    /// utp: most recent raw PTY output for a session, up to `max_bytes`.
+    fn output_tail(&self, id: &str, max_bytes: usize) -> Option<Vec<u8>> {
+        let session = self.sessions.get(id)?;
+        session
+            .output_tail
+            .lock()
+            .ok()
+            .map(|tail| tail.snapshot(max_bytes))
     }
 
     fn resize_session(&mut self, id: &str, cols: u32, rows: u32) -> Result<(), String> {
@@ -340,6 +398,16 @@ impl SessionManager {
         let Some(mut session) = self.sessions.remove(id) else {
             return Ok(());
         };
+        // Stop the local model server when the last local-profile terminal
+        // goes away, even if the shutdown below errors.
+        if should_unload_local_model(
+            session.launched_omp && session.launch_profile == LaunchProfile::Local,
+            self.sessions
+                .values()
+                .map(|s| (s.launched_omp, s.launch_profile)),
+        ) {
+            local_model::unload();
+        }
         let persistent_result = if kill_persistent && session.launched_omp {
             kill_persistent_slot(session.slot)
         } else {
@@ -421,12 +489,16 @@ fn reader_thread(
     app: AppHandle,
     cleanup_tx: mpsc::Sender<String>,
     mut reader: Box<dyn Read + Send>,
+    output_tail: Arc<Mutex<utp::OutputTail>>,
 ) {
     let mut buf = [0u8; 65536];
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
+                if let Ok(mut tail) = output_tail.lock() {
+                    tail.push(&buf[..n]);
+                }
                 let payload = TerminalOutput {
                     id: id.clone(),
                     data: STANDARD.encode(&buf[..n]),
@@ -1320,6 +1392,11 @@ pub fn run() {
             app.manage(telemetry);
             app.manage(maintenance);
             app.manage(MetricsSystem(Mutex::new(System::new())));
+
+            // UltraTerm Protocol control socket (~/.ultraterm/utp.sock):
+            // agent-facing list/inspect/send/message between terminals.
+            let utp_manager = app.state::<Arc<Mutex<SessionManager>>>().inner().clone();
+            utp::spawn(utp_manager, app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1380,6 +1457,32 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unload_decision_requires_removed_local_and_no_local_remaining() {
+        // Removed a local OMP session and nothing local remains → unload.
+        assert!(should_unload_local_model(true, std::iter::empty()));
+        assert!(should_unload_local_model(
+            true,
+            [(true, LaunchProfile::GptOnly)].into_iter()
+        ));
+        // A local OMP session is still attached → keep the model resident.
+        assert!(!should_unload_local_model(
+            true,
+            [(true, LaunchProfile::Local)].into_iter()
+        ));
+        // A plain shell on the local slot never launched OMP → does not count.
+        assert!(should_unload_local_model(
+            true,
+            [(false, LaunchProfile::Local)].into_iter()
+        ));
+        // The removed session was not local → never unload.
+        assert!(!should_unload_local_model(false, std::iter::empty()));
+        assert!(!should_unload_local_model(
+            false,
+            [(true, LaunchProfile::Local)].into_iter()
+        ));
+    }
 
     #[test]
     fn shell_escape_neutralizes_embedded_quotes() {

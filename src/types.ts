@@ -48,7 +48,7 @@ export const LAUNCH_PROFILE_OPTIONS: ReadonlyArray<LaunchProfileOption> = [
   {
     id: "local",
     label: "Local",
-    description: "Launch Qwen3.8 27B Ridge through LM Studio on this Mac",
+    description: "Launch the OverSeer Qwen 3.8 27B MTP model through the local MTPLX server; the server starts on open and stops when the last local terminal closes",
   },
 ];
 
@@ -258,6 +258,14 @@ export interface TerminalOutputEvent {
 
 export interface TerminalExitEvent {
   id: string;
+}
+
+/** utp `message` delivery: an explicitly addressed note between terminals. */
+export interface TerminalMessageEvent {
+  to: string;
+  toSlot: number;
+  fromSlot: number;
+  text: string;
 }
 
 export interface TerminalController {
