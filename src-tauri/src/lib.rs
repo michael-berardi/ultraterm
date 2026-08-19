@@ -994,6 +994,19 @@ fn build_command(
         })?;
 
         let mut cmd = CommandBuilder::new(&omp_path);
+        if launch_profile == LaunchProfile::Local {
+            // Mirror ~/bin/omp-local: the 6,144-token local model cannot
+            // carry the full OMP system prompt with tools/skills/rules
+            // (≈15.8K prompt tokens → the server rejects with a 400).
+            cmd.arg("--system-prompt=You are a helpful assistant. /no_think");
+            cmd.arg("--thinking=off");
+            cmd.arg("--hide-thinking");
+            cmd.arg("--no-skills");
+            cmd.arg("--no-rules");
+            cmd.arg("--no-extensions");
+            cmd.arg("--no-lsp");
+            cmd.arg("--no-tools");
+        }
         cmd.env_remove("TMUX");
         cmd.env_remove("TMUX_PANE");
         cmd.env("OMP_TMUX_SESSION", &session_name);
