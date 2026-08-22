@@ -8,6 +8,7 @@ VERSION_FILE="$TMP_ROOT/version"
 MODE_FILE="$TMP_ROOT/mode"
 COUNT_FILE="$TMP_ROOT/count"
 TMUX_BIN="$(command -v tmux)"
+unset TMUX TMUX_PANE
 
 cleanup() {
   TMUX_TMPDIR="$TMUX_ROOT" "$TMUX_BIN" kill-server 2>/dev/null || true

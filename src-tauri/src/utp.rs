@@ -17,22 +17,26 @@
 //!   addressed message shown as a banner on the target terminal only. There
 //!   is no broadcast: a message exists only when one terminal asks for it.
 //!
-//! Agent entry point: `~/bin/utp` (repo: `scripts/utp`), a stdlib-only
-//! Python CLI wrapping this socket. Precedent: WezTerm `wezterm cli` mux
+//! Agent entry point: `~/.ultraterm/bin/utp` (bundled from `scripts/utp`),
+//! a stdlib-only Python CLI wrapping this socket. Precedent: WezTerm
 //! socket, kitty remote control, Zellij `zellij action`.
 
+use crate::omp_profiles::{self, CreateOmpProfileRequest};
+use crate::SessionManager;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::VecDeque;
+#[cfg(test)]
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
+#[cfg(test)]
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use tauri::{AppHandle, Emitter, Manager};
-
-use crate::SessionManager;
+use tauri::{AppHandle, Emitter};
 
 const SOCKET_DIR_PERMS: u32 = 0o700;
 const SOCKET_FILE_PERMS: u32 = 0o600;
@@ -156,6 +160,7 @@ fn handle_connection(
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Request {
     cmd: String,
     id: Option<String>,
@@ -166,6 +171,83 @@ struct Request {
     lines: Option<usize>,
     raw: Option<bool>,
     enter: Option<bool>,
+    name: Option<String>,
+    model: Option<String>,
+    thinking_level: Option<String>,
+    title_model: Option<String>,
+    #[serde(default)]
+    request: Option<CreateOmpProfileRequest>,
+}
+
+fn profile_create_request(request: &Request) -> Result<CreateOmpProfileRequest, String> {
+    if let Some(request) = request.request.clone() {
+        return Ok(request);
+    }
+    Ok(CreateOmpProfileRequest {
+        name: request
+            .name
+            .clone()
+            .ok_or_else(|| "profiles.create requires name".to_string())?,
+        model: request
+            .model
+            .clone()
+            .ok_or_else(|| "profiles.create requires model".to_string())?,
+        thinking_level: request
+            .thinking_level
+            .clone()
+            .ok_or_else(|| "profiles.create requires thinkingLevel".to_string())?,
+        title_model: request.title_model.clone(),
+    })
+}
+
+fn profile_response(request: &Request) -> Value {
+    match request.cmd.as_str() {
+        "profiles.list" => match omp_profiles::list() {
+            Ok(profiles) => json!({"ok": true, "profiles": profiles}),
+            Err(error) => json!({"ok": false, "error": error}),
+        },
+        "profiles.create" => match profile_create_request(request)
+            .and_then(|request| omp_profiles::create(&request))
+        {
+            Ok(profile) => json!({"ok": true, "profile": profile}),
+            Err(error) => json!({"ok": false, "error": error}),
+        },
+        "profiles.remove" => {
+            let Some(name) = request.name.as_deref() else {
+                return json!({"ok": false, "error": "profiles.remove requires name"});
+            };
+            match omp_profiles::remove(name) {
+                Ok(()) => json!({"ok": true, "name": name}),
+                Err(error) => json!({"ok": false, "error": error}),
+            }
+        }
+        _ => json!({"ok": false, "error": "unknown profile command"}),
+    }
+}
+#[cfg(test)]
+fn profile_response_at(request: &Request, root: &Path, active: &HashSet<String>) -> Value {
+    match request.cmd.as_str() {
+        "profiles.list" => match omp_profiles::list_at(root, active) {
+            Ok(profiles) => json!({"ok": true, "profiles": profiles}),
+            Err(error) => json!({"ok": false, "error": error}),
+        },
+        "profiles.create" => match profile_create_request(request)
+            .and_then(|request| omp_profiles::create_at(root, &request, active))
+        {
+            Ok(profile) => json!({"ok": true, "profile": profile}),
+            Err(error) => json!({"ok": false, "error": error}),
+        },
+        "profiles.remove" => {
+            let Some(name) = request.name.as_deref() else {
+                return json!({"ok": false, "error": "profiles.remove requires name"});
+            };
+            match omp_profiles::remove_at(root, name, active) {
+                Ok(()) => json!({"ok": true, "name": name}),
+                Err(error) => json!({"ok": false, "error": error}),
+            }
+        }
+        _ => json!({"ok": false, "error": "unknown profile command"}),
+    }
 }
 
 fn handle_request(
@@ -174,6 +256,13 @@ fn handle_request(
     app: &AppHandle,
 ) -> Value {
     match request.cmd.as_str() {
+        "profiles.list" | "profiles.create" | "profiles.remove" => {
+            let response = profile_response(request);
+            if request.cmd != "profiles.list" && response["ok"] == true {
+                let _ = app.emit("omp-profiles-changed", ());
+            }
+            return response;
+        }
         "list" => {
             let sessions = match manager.lock() {
                 Ok(manager) => manager.list_sessions(),
@@ -360,5 +449,49 @@ mod tests {
     fn strip_ansi_preserves_multibyte_utf8() {
         let raw = "│ 任务 ✓ │\x1b[32m✓\x1b[0m — 参数".as_bytes();
         assert_eq!(strip_ansi(raw), "│ 任务 ✓ │✓ — 参数");
+    }
+    #[test]
+    fn profile_requests_parse_and_dispatch_through_safe_seam() {
+        let request: Request = serde_json::from_value(json!({
+            "cmd": "profiles.create",
+            "name": "team",
+            "model": "vendor/model",
+            "thinkingLevel": "medium",
+            "titleModel": "vendor/title"
+        }))
+        .unwrap();
+        let parsed = profile_create_request(&request).unwrap();
+        assert_eq!(parsed.name, "team");
+        assert_eq!(parsed.thinking_level, "medium");
+
+        let root = tempfile::tempdir_in("/private/tmp").unwrap();
+        let active = HashSet::new();
+        let created = profile_response_at(&request, root.path(), &active);
+        assert_eq!(created["ok"], true);
+        let listed: Request = serde_json::from_value(json!({"cmd": "profiles.list"})).unwrap();
+        let response = profile_response_at(&listed, root.path(), &active);
+        assert_eq!(response["profiles"][0]["name"], "team");
+
+        let removal: Request = serde_json::from_value(json!({
+            "cmd": "profiles.remove",
+            "name": "team"
+        }))
+        .unwrap();
+        assert_eq!(profile_response_at(&removal, root.path(), &active)["ok"], true);
+        assert!(root.path().join("team").exists() == false);
+    }
+
+    #[test]
+    fn profile_dispatch_returns_error_envelope_for_invalid_request() {
+        let request: Request = serde_json::from_value(json!({
+            "cmd": "profiles.create",
+            "name": "../escape",
+            "model": "vendor/model",
+            "thinkingLevel": "medium"
+        }))
+        .unwrap();
+        let response = profile_response_at(&request, Path::new("/tmp"), &HashSet::new());
+        assert_eq!(response["ok"], false);
+        assert!(response["error"].is_string());
     }
 }

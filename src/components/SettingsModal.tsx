@@ -3,14 +3,18 @@ import { createPortal } from "react-dom";
 import {
   Check,
   KeyRound,
+  Layers,
   Palette,
   ShieldCheck,
   TerminalSquare,
   X,
 } from "lucide-react";
 import { IntegrationsSettings } from "./IntegrationsSettings";
+import { OmpProfilesSettings } from "./OmpProfilesSettings";
 import type {
   AppTelemetryConsent,
+  CreateOmpProfileRequest,
+  OmpProfileInfo,
   ProviderUsagePreferences,
   TerminalCursorStyle,
   TerminalPreferences,
@@ -35,13 +39,16 @@ const CURSOR_STYLES: Array<{
   { id: "underline", name: "Underline" },
 ];
 
-export type SettingsSection = "appearance" | "terminal" | "integrations" | "privacy";
+export type SettingsSection = "appearance" | "terminal" | "profiles" | "integrations" | "privacy";
 
 interface SettingsModalProps {
   open: boolean;
   theme: ThemeId;
   terminalPreferences: TerminalPreferences;
   providerUsagePreferences: ProviderUsagePreferences;
+  ompProfiles: OmpProfileInfo[];
+  ompProfilesLoaded: boolean;
+  ompProfilesError: string | null;
   telemetryConsent: AppTelemetryConsent;
   /** When set, the modal jumps to this section the next time it opens. */
   initialSection?: SettingsSection;
@@ -49,6 +56,9 @@ interface SettingsModalProps {
   onTerminalPreferencesChange: (preferences: TerminalPreferences) => void;
   onProviderUsagePreferencesChange: (preferences: ProviderUsagePreferences) => void;
   onTelemetryConsentChange: (enabled: boolean) => void;
+  onCreateOmpProfile: (request: CreateOmpProfileRequest) => Promise<void>;
+  onRefreshOmpProfiles: () => Promise<void>;
+  onRemoveOmpProfile: (name: string) => Promise<void>;
   onClose: () => void;
 }
 
@@ -57,12 +67,18 @@ export function SettingsModal({
   theme,
   terminalPreferences,
   providerUsagePreferences,
+  ompProfiles,
+  ompProfilesLoaded,
+  ompProfilesError,
   telemetryConsent,
   initialSection,
   onThemeChange,
   onTerminalPreferencesChange,
   onProviderUsagePreferencesChange,
   onTelemetryConsentChange,
+  onCreateOmpProfile,
+  onRefreshOmpProfiles,
+  onRemoveOmpProfile,
   onClose,
 }: SettingsModalProps) {
   const [activeSection, setActiveSection] = useState<SettingsSection>("appearance");
@@ -116,6 +132,11 @@ export function SettingsModal({
   useEffect(() => {
     if (open && initialSection) setActiveSection(initialSection);
   }, [open, initialSection]);
+
+  useEffect(() => {
+    if (!open || activeSection !== "profiles") return;
+    void onRefreshOmpProfiles().catch(() => {});
+  }, [activeSection, onRefreshOmpProfiles, open]);
 
   const handleSectionKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
     const tabs = Array.from(
@@ -206,6 +227,19 @@ export function SettingsModal({
               Terminal
             </button>
             <button
+              id="settings-tab-profiles"
+              type="button"
+              role="tab"
+              aria-selected={activeSection === "profiles"}
+              aria-controls="settings-panel-profiles"
+              tabIndex={activeSection === "profiles" ? 0 : -1}
+              onClick={() => setActiveSection("profiles")}
+              onKeyDown={handleSectionKeyDown}
+            >
+              <Layers size={15} aria-hidden="true" />
+              OMP Profiles
+            </button>
+            <button
               id="settings-tab-integrations"
               type="button"
               role="tab"
@@ -233,7 +267,24 @@ export function SettingsModal({
             </button>
           </nav>
 
-          {activeSection === "privacy" ? (
+          {activeSection === "profiles" ? (
+            <section
+              id="settings-panel-profiles"
+              className="settings-panel"
+              role="tabpanel"
+              aria-labelledby="settings-tab-profiles"
+              tabIndex={0}
+            >
+              <OmpProfilesSettings
+                profiles={ompProfiles}
+                profilesLoaded={ompProfilesLoaded}
+                profilesError={ompProfilesError}
+                onRefreshProfiles={onRefreshOmpProfiles}
+                onCreateProfile={onCreateOmpProfile}
+                onRemoveProfile={onRemoveOmpProfile}
+              />
+            </section>
+          ) : activeSection === "privacy" ? (
             <section
               id="settings-panel-privacy"
               className="settings-panel"

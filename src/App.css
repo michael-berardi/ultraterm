@@ -3203,6 +3203,7 @@ button:disabled {
 }
 
 .provider-card__field input,
+.provider-card__field select,
 .provider-card__field textarea {
   width: 100%;
   height: var(--space-8);
@@ -3226,11 +3227,13 @@ button:disabled {
 }
 
 .provider-card__field input:hover,
+.provider-card__field select:hover,
 .provider-card__field textarea:hover {
   border-color: var(--control-border-strong);
 }
 
 .provider-card__field input:focus-visible,
+.provider-card__field select:focus-visible,
 .provider-card__field textarea:focus-visible {
   border-color: var(--control-border-strong);
   outline: 2px solid var(--accent-soft);
@@ -3238,8 +3241,16 @@ button:disabled {
 }
 
 .provider-card__field input:disabled,
+.provider-card__field select:disabled,
 .provider-card__field textarea:disabled {
   opacity: 0.55;
+}
+
+.provider-card__field-hint {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: var(--type-caption);
+  line-height: 1.4;
 }
 
 .provider-card__actions {
@@ -3292,6 +3303,43 @@ button:disabled {
 
 .provider-card__notice--error {
   color: var(--danger);
+}
+
+.omp-profiles-empty {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px dashed var(--control-border);
+  border-radius: var(--radius-group);
+  color: var(--text-faint);
+  font-size: var(--type-control);
+  line-height: 1.5;
+}
+
+.omp-profile-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.omp-profile-row__badge {
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--working) 34%, transparent);
+  border-radius: 999px;
+  color: var(--working);
+  font-size: 9px;
+  font-weight: 620;
+  letter-spacing: 0.04em;
+}
+
+.omp-profile-row__confirm {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.omp-profile-row__confirm small {
+  color: var(--danger);
+  font-size: var(--type-caption);
+  white-space: nowrap;
 }
 
 @media (prefers-reduced-motion: reduce) {

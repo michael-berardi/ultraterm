@@ -18,7 +18,6 @@ import {
   writeToSession,
 } from "../lib/terminalApi";
 import type {
-  LaunchProfileId,
   MemorySnapshot,
   TokenTelemetry,
   TerminalController,
@@ -27,7 +26,7 @@ import type {
   TerminalOutputEvent,
   WorkspaceSession,
 } from "../types";
-import { isLaunchProfileId, launchProfileFromOmpProfile } from "../types";
+import { launchProfileFromOmpProfile } from "../types";
 import {
   isResizeActivitySuppressed,
   resizeActivitySuppressionDeadline,
@@ -52,12 +51,16 @@ const EMPTY_TOKEN_COUNTS = {
   total: 0,
 };
 const TEXT_ENCODER = new TextEncoder();
-const TERMINAL_SLOTS_STORAGE_KEY = "ultraterm.open-terminal-slots";
-const LAUNCH_PROFILE_STORAGE_KEY = "ultraterm.launch-profile";
+const TERMINAL_SLOTS_STORAGE_KEY = "ultraterm.open-terminal-slots-v2";
+const LEGACY_TERMINAL_SLOTS_STORAGE_KEY = "ultraterm.open-terminal-slots";
+const LAUNCH_PROFILE_STORAGE_KEY = "ultraterm.launch-profile-v2";
+const LEGACY_LAUNCH_PROFILE_STORAGE_KEY = "ultraterm.launch-profile";
+const DEFAULT_PROFILE_SENTINEL = "@default";
 
 export interface TerminalLaunchRow {
   slot: number;
-  launchProfile: LaunchProfileId;
+  /** OMP profile name; null means Default OMP. */
+  launchProfile: string | null;
 }
 
 export async function cleanupOrphanTmuxSlots(
@@ -97,16 +100,19 @@ export function ompCommandInput(command: "/new" | "/exit" | "/resume"): string {
 }
 
 /**
- * Reads persisted terminal launch rows. The legacy format stored a bare array of
- * slot numbers; those entries migrate in place to the `default` launch profile.
+ * Reads persisted terminal launch rows. Arbitrary profile names restore
+ * unchanged; the legacy slot-only format and the legacy "default" id migrate
+ * in place to null (Default OMP).
  */
 export function readTerminalLaunchRows(maxSlots: number): TerminalLaunchRow[] | null {
   try {
-    const stored = window.localStorage.getItem(TERMINAL_SLOTS_STORAGE_KEY);
+    const current = window.localStorage.getItem(TERMINAL_SLOTS_STORAGE_KEY);
+    const legacy = current === null;
+    const stored = current ?? window.localStorage.getItem(LEGACY_TERMINAL_SLOTS_STORAGE_KEY);
     if (stored === null) return null;
     const parsed: unknown = JSON.parse(stored);
     if (!Array.isArray(parsed)) return null;
-    const rows = new Map<number, LaunchProfileId>();
+    const rows = new Map<number, string | null>();
     for (const entry of parsed) {
       const record = typeof entry === "object" && entry !== null
         ? entry as { slot?: unknown; launchProfile?: unknown }
@@ -118,9 +124,14 @@ export function readTerminalLaunchRows(maxSlots: number): TerminalLaunchRow[] | 
         || slot < 1
         || slot > maxSlots
       ) continue;
+      const storedProfile = record?.launchProfile;
       rows.set(
         slot,
-        record && isLaunchProfileId(record.launchProfile) ? record.launchProfile : "default",
+        typeof storedProfile === "string"
+          && storedProfile !== ""
+          && (!legacy || storedProfile !== "default")
+          ? storedProfile
+          : null,
       );
     }
     return Array.from(rows, ([slot, launchProfile]) => ({ slot, launchProfile }))
@@ -130,12 +141,18 @@ export function readTerminalLaunchRows(maxSlots: number): TerminalLaunchRow[] | 
   }
 }
 
-export function readLastLaunchProfile(): LaunchProfileId {
+/**
+ * Reads the last chosen launch profile. Arbitrary names are preserved; the
+ * legacy "default" id and empty values migrate to null (Default OMP).
+ */
+export function readLastLaunchProfile(): string | null {
   try {
-    const stored = window.localStorage.getItem(LAUNCH_PROFILE_STORAGE_KEY);
-    return isLaunchProfileId(stored) ? stored : "default";
+    const current = window.localStorage.getItem(LAUNCH_PROFILE_STORAGE_KEY);
+    if (current !== null) return current === DEFAULT_PROFILE_SENTINEL ? null : current || null;
+    const legacy = window.localStorage.getItem(LEGACY_LAUNCH_PROFILE_STORAGE_KEY);
+    return legacy && legacy !== "default" ? legacy : null;
   } catch {
-    return "default";
+    return null;
   }
 }
 
@@ -213,7 +230,7 @@ export function useTerminalWorkspace() {
   const [sessions, setSessions] = useState<WorkspaceSession[]>([]);
   const [metrics, setMetrics] = useState<MemorySnapshot>(DEFAULT_METRICS);
   const [telemetry, setTelemetry] = useState<TokenTelemetry>(DEFAULT_TOKEN_TELEMETRY);
-  const [launchProfile, setLaunchProfile] = useState<LaunchProfileId>(readLastLaunchProfile);
+  const [launchProfile, setLaunchProfile] = useState<string | null>(readLastLaunchProfile);
   const [isBooting, setIsBooting] = useState(false);
   const [isAddingPane, setIsAddingPane] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -452,7 +469,7 @@ export function useTerminalWorkspace() {
     }
   }, []);
 
-  const launchSlot = useCallback(async (slot: number, profile: LaunchProfileId) => {
+  const launchSlot = useCallback(async (slot: number, profile: string | null) => {
     if (!desktopRuntime) {
       throw new Error("Terminal sessions require the UltraTerm desktop runtime.");
     }
@@ -498,7 +515,7 @@ export function useTerminalWorkspace() {
     }
     setSessions(existing.map((session) => ({
       ...session,
-      launchProfile: session.launchProfile ?? "default",
+      launchProfile: session.launchProfile ?? null,
       status: "live" as const,
       activity: "idle" as const,
     })));
@@ -519,7 +536,7 @@ export function useTerminalWorkspace() {
       if (existing.length > 0) {
         setSessions(existing.map((session) => ({
           ...session,
-          launchProfile: session.launchProfile ?? "default",
+          launchProfile: session.launchProfile ?? null,
           status: "live" as const,
           activity: "idle" as const,
         })));
@@ -577,16 +594,21 @@ export function useTerminalWorkspace() {
     }
   }, [desktopRuntime, cleanupOrphanSlots, launchProfile, launchSlot]);
 
-  const addPane = useCallback(async (profile?: LaunchProfileId) => {
+  const addPane = useCallback(async (profile?: string | null) => {
     if (addPaneInFlight.current) return;
     addPaneInFlight.current = true;
     setIsAddingPane(true);
     setNotice(null);
-    const resolvedProfile = profile ?? launchProfile;
-    if (profile) {
-      setLaunchProfile(profile);
+    // `undefined` keeps the last chosen profile; an explicit value (including
+    // null for Default OMP) becomes the new remembered selection.
+    const resolvedProfile = profile === undefined ? launchProfile : profile;
+    if (profile !== undefined) {
+      setLaunchProfile(resolvedProfile);
       try {
-        window.localStorage.setItem(LAUNCH_PROFILE_STORAGE_KEY, profile);
+        window.localStorage.setItem(
+          LAUNCH_PROFILE_STORAGE_KEY,
+          resolvedProfile ?? DEFAULT_PROFILE_SENTINEL,
+        );
       } catch {
         // Profile persistence is best-effort; the launch still proceeds.
       }
@@ -615,6 +637,16 @@ export function useTerminalWorkspace() {
       setIsAddingPane(false);
     }
   }, [launchProfile, launchSlot, metrics.maxSessions, sessions]);
+
+  /** Resets the remembered selection to Default OMP (e.g. its profile was removed). */
+  const clearLaunchProfile = useCallback((): void => {
+    setLaunchProfile(null);
+    try {
+      window.localStorage.setItem(LAUNCH_PROFILE_STORAGE_KEY, DEFAULT_PROFILE_SENTINEL);
+    } catch {
+      // Best-effort; the in-memory reset already happened.
+    }
+  }, []);
 
   const removePane = useCallback(async (id: string) => {
     const session = sessions.find((candidate) => candidate.id === id);
@@ -770,6 +802,7 @@ export function useTerminalWorkspace() {
     metrics,
     telemetry,
     launchProfile,
+    clearLaunchProfile,
     isBooting,
     isAddingPane,
     notice,

@@ -238,14 +238,28 @@ create_session() {
   local command="$1"
   local previous_history_limit
   local exit_code
+  local creating_identity
   previous_history_limit=$("$TMUX_BIN" show-options -gv history-limit 2>/dev/null || true)
   previous_history_limit="${previous_history_limit:-2000}"
   if "$TMUX_BIN" start-server \; \
     set-option -g history-limit "$ULTRATERM_SCROLLBACK_LINES" \; \
-    new-session -d -s "$OMP_SESSION" "$command"; then
+    new-session -d -s "$OMP_SESSION" "/bin/sleep 86400" \; \
+    set-option -q -t "$OMP_SESSION" @omp-safe-creating "$OMP_IDENTITY" \; \
+    set-option -q -t "$OMP_SESSION" @omp-profile "$OMP_PROFILE" \; \
+    set-option -q -t "$OMP_SESSION" @omp-safe-bin "$OMP_BIN" \; \
+    set-option -q -t "$OMP_SESSION" @omp-safe-identity "$OMP_IDENTITY" \; \
+    set-option -q -t "$OMP_SESSION" @omp-safe-signature "$OMP_IDENTITY" \; \
+    set-option -q -t "$OMP_SESSION" @matrix-safe-signature "$OMP_IDENTITY" \; \
+    set-option -q -t "$OMP_SESSION" @omp-safe-version "$OMP_VERSION" \; \
+    respawn-pane -k -t "$OMP_SESSION" "$command" \; \
+    set-option -qu -t "$OMP_SESSION" @omp-safe-creating; then
     exit_code=0
   else
     exit_code=$?
+    creating_identity=$("$TMUX_BIN" show-options -qv -t "$OMP_SESSION" @omp-safe-creating 2>/dev/null || true)
+    if [ "$creating_identity" = "$OMP_IDENTITY" ]; then
+      "$TMUX_BIN" kill-session -t "$OMP_SESSION" 2>/dev/null || true
+    fi
   fi
   "$TMUX_BIN" set-option -g history-limit "$previous_history_limit" 2>/dev/null || true
   return "$exit_code"

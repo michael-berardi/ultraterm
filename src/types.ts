@@ -28,46 +28,68 @@ export const DEFAULT_PROVIDER_USAGE_PREFERENCES: Readonly<ProviderUsagePreferenc
 export type SessionStatus = "connecting" | "live" | "exited" | "error";
 export type SessionActivity = "idle" | "working";
 
-export type LaunchProfileId = "default" | "gpt-only" | "kimi-k3" | "deepseek-v4-flash" | "ox-alpha" | "local";
+/** Discovered OMP profile under $HOME/.omp/profiles. */
+export interface OmpProfileInfo {
+  name: string;
+  active: boolean;
+}
 
+export type OmpThinkingLevel =
+  | "off"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max"
+  | "auto";
+
+export const OMP_THINKING_LEVELS: ReadonlyArray<OmpThinkingLevel> = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "auto",
+];
+
+export interface CreateOmpProfileRequest {
+  name: string;
+  model: string;
+  thinkingLevel: OmpThinkingLevel;
+  titleModel?: string;
+}
+
+/**
+ * A launch profile is an arbitrary OMP profile name; null means Default OMP
+ * (the unprofiled installation, launched without a profile).
+ */
 export interface LaunchProfileOption {
-  id: LaunchProfileId;
+  id: string | null;
   label: string;
   description: string;
 }
 
-export const LAUNCH_PROFILE_OPTIONS: ReadonlyArray<LaunchProfileOption> = [
-  { id: "default", label: "Default", description: "Launch the mixed Kimi, Sol, and Luna OMP profile" },
-  { id: "gpt-only", label: "GPT only", description: "Launch with the gpt-only OMP profile" },
-  { id: "kimi-k3", label: "Kimi K3", description: "Launch with the kimi-k3 OMP profile" },
-  {
-    id: "deepseek-v4-flash",
-    label: "DeepSeek V4 Flash",
-    description: "Launch an all-DeepSeek V4 Flash OMP profile",
-  },
-  {
-    id: "ox-alpha",
-    label: "Ox Alpha",
-    description: "Launch an all-Ox Alpha OMP profile (free OpenRouter stealth model)",
-  },
-  {
-    id: "local",
-    label: "Local",
-    description: "Launch the OverSeer Qwen 3.8 27B MTP model through the local MTPLX server; the server starts on open and stops when the last local terminal closes",
-  },
-];
-
-export function isLaunchProfileId(value: unknown): value is LaunchProfileId {
-  return value === "default"
-    || value === "gpt-only"
-    || value === "kimi-k3"
-    || value === "deepseek-v4-flash"
-    || value === "ox-alpha"
-    || value === "local";
+/** Launch menu entries: Default OMP first, then every discovered profile. */
+export function launchProfileOptions(profiles: ReadonlyArray<OmpProfileInfo>): LaunchProfileOption[] {
+  return [
+    {
+      id: null,
+      label: "Default OMP",
+      description: "Launch OMP without a profile",
+    },
+    ...profiles.map((profile) => ({
+      id: profile.name,
+      label: profile.name,
+      description: `Launch with the ${profile.name} OMP profile`,
+    })),
+  ];
 }
 
-export function launchProfileLabel(profile: LaunchProfileId | null | undefined): string {
-  return LAUNCH_PROFILE_OPTIONS.find((option) => option.id === profile)?.label ?? "Default";
+export function launchProfileLabel(profile: string | null | undefined): string {
+  return profile ? profile : "Default OMP";
 }
 
 export interface PersistentSlotInfo {
@@ -96,11 +118,11 @@ export interface AppTelemetryUsage {
 
 /**
  * Maps the OMP profile recorded on a persistent tmux session back to a launch
- * profile. Legacy sessions without metadata (and the default "lds" profile)
- * restore as "default".
+ * profile. Arbitrary recorded names restore unchanged; empty or missing
+ * metadata means Default OMP.
  */
-export function launchProfileFromOmpProfile(profile: string | null | undefined): LaunchProfileId {
-  return isLaunchProfileId(profile) && profile !== "default" ? profile : "default";
+export function launchProfileFromOmpProfile(profile: string | null | undefined): string | null {
+  return profile ? profile : null;
 }
 
 export interface SessionInfo {
@@ -109,7 +131,8 @@ export interface SessionInfo {
   title: string;
   pid: number | null;
   launchedOmp: boolean;
-  launchProfile: LaunchProfileId;
+  /** Recorded OMP profile name; null means Default OMP. */
+  launchProfile: string | null;
 }
 
 export interface WorkspaceSession extends SessionInfo {
@@ -262,8 +285,8 @@ export interface CreateSessionRequest {
   rows: number;
   workingDirectory?: string;
   launchOmp: boolean;
-  /** Omitted means the backend launches the `default` profile. */
-  launchProfile?: LaunchProfileId;
+  /** Null or omitted launches Default OMP (no profile). */
+  launchProfile?: string | null;
 }
 
 export interface TerminalOutputEvent {

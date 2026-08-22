@@ -31,10 +31,10 @@ describe("appendCappedOutput", () => {
   });
 });
 
-function stubStorage(value: string | null): void {
+function stubStorage(value: string | null, current = false): void {
   vi.stubGlobal("window", {
     localStorage: {
-      getItem: vi.fn().mockReturnValue(value),
+      getItem: vi.fn((key: string) => key.endsWith("-v2") === current ? value : null),
     },
   });
 }
@@ -56,41 +56,67 @@ describe("defaultTerminalSlots", () => {
 describe("readTerminalLaunchRows", () => {
   it("reads stored slot+profile rows and clamps them to valid range", () => {
     stubStorage(JSON.stringify([
-      { slot: 3, launchProfile: "kimi-k3" },
-      { slot: 1, launchProfile: "gpt-only" },
-      { slot: 9, launchProfile: "gpt-only" },
-      { slot: 0, launchProfile: "default" },
-      { slot: 2, launchProfile: "default" },
-      { slot: 2, launchProfile: "kimi-k3" },
-      { slot: 4, launchProfile: "deepseek-v4-flash" },
-      { slot: 5, launchProfile: "local" },
+      { slot: 3, launchProfile: "fast-worker" },
+      { slot: 1, launchProfile: "reviewer" },
+      { slot: 9, launchProfile: "reviewer" },
+      { slot: 0, launchProfile: null },
+      { slot: 2, launchProfile: null },
+      { slot: 2, launchProfile: "fast-worker" },
+      { slot: 4, launchProfile: "quiet-planner" },
+      { slot: 5, launchProfile: "my-custom-profile" },
     ]));
 
     expect(readTerminalLaunchRows(8)).toEqual([
-      { slot: 1, launchProfile: "gpt-only" },
-      { slot: 2, launchProfile: "kimi-k3" },
-      { slot: 3, launchProfile: "kimi-k3" },
-      { slot: 4, launchProfile: "deepseek-v4-flash" },
-      { slot: 5, launchProfile: "local" },
+      { slot: 1, launchProfile: "reviewer" },
+      { slot: 2, launchProfile: "fast-worker" },
+      { slot: 3, launchProfile: "fast-worker" },
+      { slot: 4, launchProfile: "quiet-planner" },
+      { slot: 5, launchProfile: "my-custom-profile" },
     ]);
   });
 
-  it("migrates legacy slot-only arrays to default-profile rows", () => {
+  it("migrates legacy slot-only arrays to Default OMP rows", () => {
     stubStorage(JSON.stringify([3, 1, 8, 0, 9, 2, 2]));
 
     expect(readTerminalLaunchRows(8)).toEqual([
-      { slot: 1, launchProfile: "default" },
-      { slot: 2, launchProfile: "default" },
-      { slot: 3, launchProfile: "default" },
-      { slot: 8, launchProfile: "default" },
+      { slot: 1, launchProfile: null },
+      { slot: 2, launchProfile: null },
+      { slot: 3, launchProfile: null },
+      { slot: 8, launchProfile: null },
     ]);
   });
 
-  it("falls back to the default profile for unknown profile ids", () => {
-    stubStorage(JSON.stringify([{ slot: 1, launchProfile: "not-a-profile" }]));
+  it("migrates the legacy \"default\" profile id to null", () => {
+    stubStorage(JSON.stringify([
+      { slot: 1, launchProfile: "default" },
+      { slot: 2, launchProfile: "other" },
+    ]));
+
+    expect(readTerminalLaunchRows(8)).toEqual([
+      { slot: 1, launchProfile: null },
+      { slot: 2, launchProfile: "other" },
+    ]);
+  });
+
+  it("preserves a real profile named default in versioned rows", () => {
+    stubStorage(JSON.stringify([{ slot: 1, launchProfile: "default" }]), true);
 
     expect(readTerminalLaunchRows(8)).toEqual([
       { slot: 1, launchProfile: "default" },
+    ]);
+  });
+
+  it("preserves arbitrary profile names and maps empty or non-string values to null", () => {
+    stubStorage(JSON.stringify([
+      { slot: 1, launchProfile: "any-name-the-user-made" },
+      { slot: 2, launchProfile: "" },
+      { slot: 3, launchProfile: 42 },
+    ]));
+
+    expect(readTerminalLaunchRows(8)).toEqual([
+      { slot: 1, launchProfile: "any-name-the-user-made" },
+      { slot: 2, launchProfile: null },
+      { slot: 3, launchProfile: null },
     ]);
   });
 
@@ -102,16 +128,38 @@ describe("readTerminalLaunchRows", () => {
 });
 
 describe("readLastLaunchProfile", () => {
-  it("returns the stored profile when it is a known id", () => {
-    stubStorage("local");
+  it("preserves an arbitrary stored profile name", () => {
+    stubStorage("my-custom-profile");
 
-    expect(readLastLaunchProfile()).toBe("local");
+    expect(readLastLaunchProfile()).toBe("my-custom-profile");
   });
 
-  it("falls back to default for missing or unknown values", () => {
-    stubStorage("bogus");
+  it("migrates the legacy \"default\" id to null", () => {
+    stubStorage("default");
+
+    expect(readLastLaunchProfile()).toBeNull();
+  });
+
+  it("preserves a real profile named default in versioned storage", () => {
+    stubStorage("default", true);
 
     expect(readLastLaunchProfile()).toBe("default");
+  });
+
+  it("preserves an explicit versioned Default OMP selection", () => {
+    stubStorage("@default", true);
+
+    expect(readLastLaunchProfile()).toBeNull();
+  });
+
+  it("returns null for missing or empty values", () => {
+    stubStorage(null);
+
+    expect(readLastLaunchProfile()).toBeNull();
+
+    stubStorage("");
+
+    expect(readLastLaunchProfile()).toBeNull();
   });
 });
 

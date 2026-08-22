@@ -12,6 +12,7 @@ import { UpdatePrompt } from "./components/UpdatePrompt";
 import { VoicePreviewModal } from "./components/VoicePreviewModal";
 import { useAppUpdate } from "./hooks/useAppUpdate";
 import { useTerminalWorkspace } from "./hooks/useTerminalWorkspace";
+import { useOmpProfiles } from "./hooks/useOmpProfiles";
 import { usePs4Controller } from "./hooks/usePs4Controller";
 import {
   appTelemetryState,
@@ -31,7 +32,6 @@ import {
   DEFAULT_TERMINAL_PREFERENCES,
   TERMINAL_SCROLLBACK,
   type AppTelemetryConsent,
-  type LaunchProfileId,
   type ProviderUsagePreferences,
   type TerminalController,
   type ThemeId,
@@ -278,6 +278,12 @@ function withTimeout<T>(
 function App(): ReactElement {
   useWindowGeometryPersistence();
   const workspace = useTerminalWorkspace();
+  const ompProfiles = useOmpProfiles();
+  const activeProfileSignature = workspace.sessions
+    .filter((session) => session.launchedOmp)
+    .map((session) => session.launchProfile ?? "")
+    .sort()
+    .join("\u0000");
   const [activeId, setActiveId] = useState<string | null>(null);
   const activeIdRef = useRef<string | null>(activeId);
   activeIdRef.current = activeId;
@@ -665,7 +671,7 @@ function App(): ReactElement {
     requestCloseTerminals(selectedTerminalIds());
   }, [requestCloseTerminals, selectedTerminalIds]);
 
-  const addTerminal = useCallback((profile?: LaunchProfileId): void => {
+  const addTerminal = useCallback((profile?: string | null): void => {
     if (
       workspace.isBooting
       || workspace.isAddingPane
@@ -679,6 +685,23 @@ function App(): ReactElement {
     workspace.metrics.maxSessions,
     workspace.sessions.length,
   ]);
+
+  // Keep the remembered launch profile only while it still exists; a removed
+  // profile falls back to Default OMP as soon as the refreshed list arrives.
+  useEffect(() => {
+    if (!ompProfiles.profilesLoaded || ompProfiles.profilesError || workspace.launchProfile === null) return;
+    if (ompProfiles.profiles.some((profile) => profile.name === workspace.launchProfile)) return;
+    workspace.clearLaunchProfile();
+  }, [ompProfiles.profiles, ompProfiles.profilesLoaded, ompProfiles.profilesError, workspace.launchProfile, workspace.clearLaunchProfile]);
+
+  useEffect(() => {
+    if (!ompProfiles.profilesLoaded) return;
+    void ompProfiles.refreshProfiles().catch(() => {});
+    const timer = window.setTimeout(() => {
+      void ompProfiles.refreshProfiles().catch(() => {});
+    }, 1_000);
+    return () => window.clearTimeout(timer);
+  }, [activeProfileSignature, ompProfiles.profilesLoaded, ompProfiles.refreshProfiles]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -1276,6 +1299,9 @@ function App(): ReactElement {
         metrics={workspace.metrics}
         telemetry={workspace.telemetry}
         launchProfile={workspace.launchProfile}
+        ompProfiles={ompProfiles.profiles}
+        ompProfilesLoaded={ompProfiles.profilesLoaded}
+        ompProfilesError={ompProfiles.profilesError}
         isBooting={workspace.isBooting || workspace.isAddingPane}
         theme={theme}
         terminalPreferences={terminalPreferences}
@@ -1296,6 +1322,9 @@ function App(): ReactElement {
         onTerminalPreferencesChange={setTerminalPreferences}
         telemetryConsent={telemetryConsent}
         onTelemetryConsentChange={handleTelemetryChoice}
+        onCreateOmpProfile={ompProfiles.createProfile}
+        onRefreshOmpProfiles={ompProfiles.refreshProfiles}
+        onRemoveOmpProfile={ompProfiles.removeProfile}
         onProviderUsagePreferencesChange={setProviderUsagePreferences}
         onDismissNotice={() => {
           workspace.dismissNotice();

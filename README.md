@@ -26,6 +26,23 @@ Then open UltraTerm like any other app. Each pane starts an OMP terminal in
 your home directory; use the profile picker next to "New terminal" to choose
 which OMP profile a pane launches with.
 
+Create and remove profiles under **Settings → OMP Profiles**. UltraTerm writes
+an isolated, user-owned OMP configuration from the exact model and reasoning
+settings you provide; it never installs a provider-specific stock profile.
+Active profiles cannot be removed. The deletion confirmation covers the whole
+profile, including its configuration, saved sessions, history, and other
+profile-local data.
+
+UltraTerm also installs its local agent CLI at `~/.ultraterm/bin/utp` and a
+neutral `omp-profile-management` skill for OMP. Agents can use the same guarded
+operations as the Settings UI:
+
+```sh
+~/.ultraterm/bin/utp profiles list
+~/.ultraterm/bin/utp profiles create <name> <model-id> <thinking-level>
+~/.ultraterm/bin/utp profiles remove <name>
+```
+
 ## Updates
 
 UltraTerm checks for updates on every launch. When a new version is available

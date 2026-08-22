@@ -3,10 +3,12 @@ import type {
   AppTelemetryState,
   AppTelemetryUsage,
   AppUpdateStatus,
+  CreateOmpProfileRequest,
   CreateSessionRequest,
   HistoryEntry,
   MaintenanceReport,
   MemorySnapshot,
+  OmpProfileInfo,
   PersistentSlotInfo,
   ProviderCredentialInput,
   ProviderUsage,
@@ -101,6 +103,18 @@ export function saveProviderCredential(input: ProviderCredentialInput): Promise<
 
 export function removeProviderCredential(provider: UsageProviderId): Promise<void> {
   return invoke("remove_provider_credential", { provider });
+}
+
+export function listOmpProfiles(): Promise<OmpProfileInfo[]> {
+  return invoke("list_omp_profiles");
+}
+
+export function createOmpProfile(request: CreateOmpProfileRequest): Promise<OmpProfileInfo> {
+  return invoke("create_omp_profile", { request });
+}
+
+export function removeOmpProfile(name: string): Promise<void> {
+  return invoke("remove_omp_profile", { name });
 }
 
 export function searchHistory(query: string, limit = 20): Promise<HistoryEntry[]> {

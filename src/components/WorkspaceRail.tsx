@@ -26,11 +26,12 @@ import { UsageDials } from "./UsageDials";
 import { restartApp } from "../lib/terminalApi";
 import { formatCacheHitPercent } from "../lib/tokenTelemetry";
 import {
-  LAUNCH_PROFILE_OPTIONS,
   launchProfileLabel,
+  launchProfileOptions,
   type AppTelemetryConsent,
-  type LaunchProfileId,
+  type CreateOmpProfileRequest,
   type MemorySnapshot,
+  type OmpProfileInfo,
   type ProviderUsagePreferences,
   type ThemeId,
   type TerminalPreferences,
@@ -46,7 +47,10 @@ interface WorkspaceRailProps {
   maximizedId: string | null;
   metrics: MemorySnapshot;
   telemetry: TokenTelemetry;
-  launchProfile: LaunchProfileId;
+  launchProfile: string | null;
+  ompProfiles: OmpProfileInfo[];
+  ompProfilesLoaded: boolean;
+  ompProfilesError: string | null;
   isBooting: boolean;
   theme: ThemeId;
   terminalPreferences: TerminalPreferences;
@@ -56,7 +60,7 @@ interface WorkspaceRailProps {
   controllerName: string | null;
   controllerVoiceState: VoiceInputState;
   onSelect: (id: string, extendSelection: boolean) => void;
-  onAddTerminal: (profile?: LaunchProfileId) => void;
+  onAddTerminal: (profile?: string | null) => void;
   onToggleMaximize: (id: string) => void;
   onRestart: (id: string) => void;
   onCloseSelected: () => void;
@@ -68,6 +72,9 @@ interface WorkspaceRailProps {
   onProviderUsagePreferencesChange: (preferences: ProviderUsagePreferences) => void;
   telemetryConsent: AppTelemetryConsent;
   onTelemetryConsentChange: (enabled: boolean) => void;
+  onCreateOmpProfile: (request: CreateOmpProfileRequest) => Promise<void>;
+  onRefreshOmpProfiles: () => Promise<void>;
+  onRemoveOmpProfile: (name: string) => Promise<void>;
   onDismissNotice: () => void;
 }
 
@@ -156,6 +163,9 @@ export function WorkspaceRail({
   metrics,
   telemetry,
   launchProfile,
+  ompProfiles,
+  ompProfilesLoaded,
+  ompProfilesError,
   isBooting,
   theme,
   terminalPreferences,
@@ -177,6 +187,9 @@ export function WorkspaceRail({
   onProviderUsagePreferencesChange,
   telemetryConsent,
   onTelemetryConsentChange,
+  onCreateOmpProfile,
+  onRefreshOmpProfiles,
+  onRemoveOmpProfile,
   onDismissNotice,
 }: WorkspaceRailProps): ReactElement {
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -266,12 +279,13 @@ export function WorkspaceRail({
     }
   };
 
-  const launchWithProfile = (profile: LaunchProfileId) => {
+  const launchWithProfile = (profile: string | null) => {
     setProfileMenu(null);
     onAddTerminal(profile);
   };
   const totalMemory = metrics.appMemoryMib + metrics.terminalMemoryMib;
   const launchProfileName = launchProfileLabel(launchProfile);
+  const profileOptions = launchProfileOptions(ompProfiles);
   const activeSession = activeId
     ? sessions.find((session) => session.id === activeId)
     : null;
@@ -632,9 +646,9 @@ export function WorkspaceRail({
           onKeyDown={onProfileMenuKeyDown}
         >
           <strong>Launch profile</strong>
-          {LAUNCH_PROFILE_OPTIONS.map((option) => (
+          {profileOptions.map((option) => (
             <button
-              key={option.id}
+              key={option.id ?? "__ultraterm-unprofiled__"}
               type="button"
               role="menuitemradio"
               aria-checked={launchProfile === option.id}
@@ -691,9 +705,15 @@ export function WorkspaceRail({
         theme={theme}
         terminalPreferences={terminalPreferences}
         providerUsagePreferences={providerUsagePreferences}
+        ompProfiles={ompProfiles}
+        ompProfilesLoaded={ompProfilesLoaded}
+        ompProfilesError={ompProfilesError}
         initialSection={settingsSection}
         telemetryConsent={telemetryConsent}
         onTelemetryConsentChange={onTelemetryConsentChange}
+        onCreateOmpProfile={onCreateOmpProfile}
+        onRefreshOmpProfiles={onRefreshOmpProfiles}
+        onRemoveOmpProfile={onRemoveOmpProfile}
         onThemeChange={onThemeChange}
         onTerminalPreferencesChange={onTerminalPreferencesChange}
         onProviderUsagePreferencesChange={onProviderUsagePreferencesChange}

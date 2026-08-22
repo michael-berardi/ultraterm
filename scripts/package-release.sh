@@ -50,6 +50,14 @@ if [[ ! -x "${APP_PATH}/Contents/Resources/omp-safe" ]]; then
   echo "UltraTerm.app is missing its bundled omp-safe launcher." >&2
   exit 1
 fi
+if [[ ! -x "${APP_PATH}/Contents/Resources/utp" ]]; then
+  echo "UltraTerm.app is missing its bundled UTP CLI." >&2
+  exit 1
+fi
+if [[ ! -f "${APP_PATH}/Contents/Resources/omp-profile-management/SKILL.md" ]]; then
+  echo "UltraTerm.app is missing its bundled OMP profile skill." >&2
+  exit 1
+fi
 
 VERSIONED_PKG="${OUTPUT_DIR}/${PRODUCT}-${VERSION}-${ARCH}.pkg"
 STABLE_PKG="${OUTPUT_DIR}/${PRODUCT}-macos-${ARCH}.pkg"

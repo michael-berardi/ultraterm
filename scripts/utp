@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """utp — UltraTerm Protocol CLI.
 
-Control socket for UltraTerm terminals: list sessions, inspect a terminal's
-recent output, send input to a terminal, and pass explicitly addressed
-messages between terminals. Speaks JSON Lines to ~/.ultraterm/utp.sock.
+Control socket for UltraTerm terminals and universal OMP profile management.
+Speaks JSON Lines to ~/.ultraterm/utp.sock.
 
 Usage:
-  utp list                              # all attached terminals (slot, id, title, profile)
+  utp list                              # all attached terminals
   utp inspect --slot 2 [--lines 80] [--raw]
-  utp send --slot 2 "ls -la"            # queues text + Enter to that PTY
+  utp send --slot 2 "ls -la"            # queues text + Enter
   utp message --from 1 --to 2 "tests are green"
+  utp profiles list
+  utp profiles create NAME MODEL THINKING [--title-model MODEL]
+  utp profiles remove NAME
 """
 
 import argparse
@@ -45,10 +47,56 @@ def call(request: dict) -> dict:
     return json.loads(line)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(prog="utp", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    sub = parser.add_subparsers(dest="cmd", required=True)
+def profile_create_request(args: argparse.Namespace) -> dict:
+    name = args.name or args.name_option
+    model = args.model or args.model_option
+    thinking = args.thinking or args.thinking_option
+    missing = [label for label, value in (("name", name), ("model", model), ("thinking", thinking)) if not value]
+    if missing:
+        raise SystemExit(f"utp profiles create: missing {', '.join(missing)}")
+    request = {
+        "cmd": "profiles.create",
+        "name": name,
+        "model": model,
+        "thinkingLevel": thinking,
+    }
+    title_model = args.title_model or args.title_model_option
+    if title_model:
+        request["titleModel"] = title_model
+    return request
 
+
+def add_profile_commands(sub: argparse._SubParsersAction) -> None:
+    profiles = sub.add_parser("profiles", help="manage OMP profiles")
+    profile_sub = profiles.add_subparsers(dest="profiles_cmd", required=True)
+    profile_sub.add_parser("list", help="list discovered OMP profiles")
+
+    create = profile_sub.add_parser("create", help="create an OMP profile")
+    create.add_argument("name", nargs="?")
+    create.add_argument("model", nargs="?")
+    create.add_argument("thinking", nargs="?")
+    create.add_argument("--name", dest="name_option")
+    create.add_argument("--model", dest="model_option")
+    create.add_argument("--thinking", dest="thinking_option")
+    create.add_argument("--title-model")
+    create.add_argument("--titleModel", dest="title_model_option")
+
+    remove = profile_sub.add_parser("remove", help="remove an inactive OMP profile")
+    remove.add_argument("name")
+
+
+def print_error(response: dict) -> None:
+    if not response.get("ok"):
+        sys.exit(f"utp: {response.get('error', 'request failed')}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        prog="utp",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list", help="list attached terminals")
 
     inspect = sub.add_parser("inspect", help="show recent output of a terminal")
@@ -67,51 +115,63 @@ def main() -> None:
     message.add_argument("--from", dest="from_slot", type=int, required=True)
     message.add_argument("--to", type=int, required=True)
     message.add_argument("text")
+    add_profile_commands(sub)
 
     args = parser.parse_args()
 
     if args.cmd == "list":
         response = call({"cmd": "list"})
-        if not response.get("ok"):
-            sys.exit(f"utp: {response.get('error')}")
+        print_error(response)
         for session in sorted(response["sessions"], key=lambda s: s["slot"]):
-            profile = session.get("launchProfile", "default")
+            profile = session.get("launchProfile") or "Default OMP"
             omp = "omp" if session.get("launchedOmp") else "shell"
             print(f"{session['slot']}\t{session['title']}\t{omp}\t{profile}\t{session['id']}")
         return
 
+    if args.cmd == "profiles":
+        if args.profiles_cmd == "list":
+            response = call({"cmd": "profiles.list"})
+            print_error(response)
+            for profile in response.get("profiles", []):
+                state = "active" if profile.get("active") else "inactive"
+                print(f"{profile['name']}\t{state}")
+            return
+        if args.profiles_cmd == "create":
+            response = call(profile_create_request(args))
+            print_error(response)
+            if response.get("profile"):
+                print(response["profile"]["name"])
+            return
+        response = call({"cmd": "profiles.remove", "name": args.name})
+        print_error(response)
+        return
+
     if args.cmd == "inspect":
         request = {"cmd": "inspect", "lines": args.lines, "raw": args.raw}
-        if args.slot:
+        if args.slot is not None:
             request["slot"] = args.slot
         elif args.id:
             request["id"] = args.id
         else:
             sys.exit("utp inspect: --slot or --id required")
         response = call(request)
-        if not response.get("ok"):
-            sys.exit(f"utp: {response.get('error')}")
+        print_error(response)
         print(response["text"])
         return
 
     if args.cmd == "send":
         request = {"cmd": "send", "text": args.text, "enter": not args.no_enter}
-        if args.slot:
+        if args.slot is not None:
             request["slot"] = args.slot
         elif args.id:
             request["id"] = args.id
         else:
             sys.exit("utp send: --slot or --id required")
-        response = call(request)
-        if not response.get("ok"):
-            sys.exit(f"utp: {response.get('error')}")
+        print_error(call(request))
         return
 
-    if args.cmd == "message":
-        response = call({"cmd": "message", "from": args.from_slot, "to": args.to, "text": args.text})
-        if not response.get("ok"):
-            sys.exit(f"utp: {response.get('error')}")
-        return
+    response = call({"cmd": "message", "from": args.from_slot, "to": args.to, "text": args.text})
+    print_error(response)
 
 
 if __name__ == "__main__":

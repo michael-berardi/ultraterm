@@ -1,13 +1,12 @@
 mod app_telemetry;
 mod history;
-mod local_model;
 mod maintenance;
+mod omp_profiles;
 mod provider_usage;
 mod telemetry;
 mod updater;
 mod ultravox_client;
 mod utp;
-
 // UltraTerm Rust backend — single-window Tauri 2 workspace with multiple PTY sessions.
 //
 // Commands:
@@ -55,43 +54,6 @@ const MAX_ROWS: u32 = 512;
 const MAX_SESSION_SLOT: u32 = 8;
 const DEFAULT_COMMAND_SEARCH_PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin";
 
-#[derive(Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum LaunchProfile {
-    #[default]
-    Default,
-    GptOnly,
-    KimiK3,
-    DeepseekV4Flash,
-    OxAlpha,
-    Local,
-}
-
-impl LaunchProfile {
-    fn omp_profile(self) -> &'static str {
-        match self {
-            Self::Default => "lds",
-            Self::GptOnly => "gpt-only",
-            Self::KimiK3 => "kimi-k3",
-            Self::DeepseekV4Flash => "deepseek-v4-flash",
-            Self::OxAlpha => "ox-alpha",
-            Self::Local => "local",
-        }
-    }
-}
-
-/// True when the removed session was a local-profile OMP terminal and no other
-/// attached session still needs the local model. Plain shell sessions carry a
-/// launch profile value too, so callers must gate on `launched_omp`.
-fn should_unload_local_model(
-    removed_was_local: bool,
-    mut remaining: impl Iterator<Item = (bool, LaunchProfile)>,
-) -> bool {
-    removed_was_local
-        && !remaining.any(|(launched_omp, profile)| {
-            launched_omp && profile == LaunchProfile::Local
-        })
-}
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -101,7 +63,7 @@ pub struct SessionInfo {
     pub title: String,
     pub pid: u32,
     pub launched_omp: bool,
-    pub launch_profile: LaunchProfile,
+    pub launch_profile: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -135,7 +97,7 @@ struct CreateSessionRequest {
     working_directory: Option<String>,
     launch_omp: Option<bool>,
     #[serde(default)]
-    launch_profile: LaunchProfile,
+    launch_profile: Option<String>,
 }
 
 struct Session {
@@ -144,7 +106,7 @@ struct Session {
     title: String,
     pid: Option<u32>,
     launched_omp: bool,
-    launch_profile: LaunchProfile,
+    launch_profile: Option<String>,
     master: Box<dyn MasterPty + Send>,
     // Input is queued to a dedicated writer thread so a backed-up PTY buffer
     // can never block keystroke IPC on the main thread. The channel preserves
@@ -308,9 +270,9 @@ impl SessionManager {
 
         let working_directory = resolve_working_directory(request.working_directory)?;
         let launch_omp = request.launch_omp.unwrap_or(false);
-        let launch_profile = request.launch_profile;
+        let launch_profile = request.launch_profile.filter(|profile| !profile.is_empty());
         let (cmd, title, launched_omp) =
-            build_command(request.slot, launch_omp, launch_profile, &working_directory)?;
+            build_command(request.slot, launch_omp, launch_profile.clone(), &working_directory)?;
 
         let pty_system = native_pty_system();
         let pair = pty_system
@@ -353,7 +315,7 @@ impl SessionManager {
             title,
             pid,
             launched_omp,
-            launch_profile,
+            launch_profile: launch_profile.clone(),
             master: pair.master,
             writer: writer_tx,
             output_tail: output_tail.clone(),
@@ -371,11 +333,6 @@ impl SessionManager {
             );
         }
 
-        // Local profile: start the mtplx daemon in the background so the model
-        // is serving by the first prompt. Never blocks session creation.
-        if launched_omp && launch_profile == LaunchProfile::Local {
-            local_model::ensure_loaded();
-        }
 
         let handle = thread::spawn(move || {
             reader_thread(session_id_for_thread, app, cleanup_tx, reader, output_tail);
@@ -396,15 +353,11 @@ impl SessionManager {
             title: s.title.clone(),
             pid: s.pid.unwrap_or(0),
             launched_omp: s.launched_omp,
-            launch_profile: s.launch_profile,
+            launch_profile: s.launch_profile.clone(),
         })
     }
 
     fn write_to_session(&mut self, id: &str, data: &str) -> Result<(), String> {
-        let session = self
-            .sessions
-            .get_mut(id)
-            .ok_or_else(|| format!("Session {} not found", id))?;
         let bytes = STANDARD
             .decode(data)
             .map_err(|e| format!("Invalid base64 input: {}", e))?;
@@ -468,16 +421,6 @@ impl SessionManager {
         let Some(mut session) = self.sessions.remove(id) else {
             return Ok(());
         };
-        // Stop the local model server when the last local-profile terminal
-        // goes away, even if the shutdown below errors.
-        if should_unload_local_model(
-            session.launched_omp && session.launch_profile == LaunchProfile::Local,
-            self.sessions
-                .values()
-                .map(|s| (s.launched_omp, s.launch_profile)),
-        ) {
-            local_model::unload();
-        }
         let persistent_result = if kill_persistent && session.launched_omp {
             kill_persistent_slot(session.slot)
         } else {
@@ -537,7 +480,7 @@ impl SessionManager {
                 title: s.title.clone(),
                 pid: s.pid.unwrap_or(0),
                 launched_omp: s.launched_omp,
-                launch_profile: s.launch_profile,
+                launch_profile: s.launch_profile.clone(),
             })
             .collect()
     }
@@ -1037,7 +980,7 @@ fn bundled_omp_launcher() -> Option<PathBuf> {
 fn build_command(
     slot: u32,
     launch_omp: bool,
-    launch_profile: LaunchProfile,
+    launch_profile: Option<String>,
     working_directory: &Path,
 ) -> Result<(CommandBuilder, String, bool), String> {
     if launch_omp {
@@ -1064,19 +1007,6 @@ fn build_command(
         })?;
 
         let mut cmd = CommandBuilder::new(&omp_path);
-        if launch_profile == LaunchProfile::Local {
-            // Mirror ~/bin/omp-local: the 6,144-token local model cannot
-            // carry the full OMP system prompt with tools/skills/rules
-            // (≈15.8K prompt tokens → the server rejects with a 400).
-            cmd.arg("--system-prompt=You are a helpful assistant. /no_think");
-            cmd.arg("--thinking=off");
-            cmd.arg("--hide-thinking");
-            cmd.arg("--no-skills");
-            cmd.arg("--no-rules");
-            cmd.arg("--no-extensions");
-            cmd.arg("--no-lsp");
-            cmd.arg("--no-tools");
-        }
         cmd.env_remove("TMUX");
         cmd.env_remove("TMUX_PANE");
         cmd.env("OMP_TMUX_SESSION", &session_name);
@@ -1088,10 +1018,14 @@ fn build_command(
             .ok()
             .flatten()
             .and_then(|tmux_path| recorded_persistent_profile(&tmux_path, &session_name));
-        if let Some(profile) = recorded_profile {
-            cmd.env("OMP_PROFILE", profile);
+        if let Some(profile) = recorded_profile.or(launch_profile) {
+            if !profile.is_empty() {
+                cmd.env("OMP_PROFILE", profile);
+            } else {
+                cmd.env_remove("OMP_PROFILE");
+            }
         } else {
-            cmd.env("OMP_PROFILE", launch_profile.omp_profile());
+            cmd.env_remove("OMP_PROFILE");
         }
         cmd.env("PATH", path);
         cmd.env("TERM", "xterm-256color");
@@ -1411,6 +1345,121 @@ async fn cancel_voice_input(
     ultravox_client::cancel_recording(&recording_id).await
 }
 
+#[tauri::command]
+fn list_omp_profiles() -> Result<Vec<omp_profiles::OmpProfileInfo>, String> {
+    omp_profiles::list()
+}
+
+#[tauri::command]
+fn create_omp_profile(
+    app: AppHandle,
+    request: omp_profiles::CreateOmpProfileRequest,
+) -> Result<omp_profiles::OmpProfileInfo, String> {
+    let profile = omp_profiles::create(&request)?;
+    let _ = app.emit("omp-profiles-changed", ());
+    Ok(profile)
+}
+
+#[tauri::command]
+fn remove_omp_profile(app: AppHandle, name: String) -> Result<(), String> {
+    omp_profiles::remove(&name)?;
+    let _ = app.emit("omp-profiles-changed", ());
+    Ok(())
+}
+
+fn install_user_resources(home: &Path, resource_dir: &Path) -> Result<(), String> {
+    let cli_source = resource_dir.join("utp");
+    if cli_source.is_file() {
+        let bin_dir = home.join(".ultraterm").join("bin");
+        std::fs::create_dir_all(&bin_dir)
+            .map_err(|error| format!("create UTP install directory: {error}"))?;
+        set_resource_mode(&bin_dir, 0o700)?;
+        let target = bin_dir.join("utp");
+        if std::fs::symlink_metadata(&target)
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            return Err(format!("refusing to replace symlink {}", target.display()));
+        }
+        let temporary = bin_dir.join(format!(".utp.{}.tmp", Uuid::new_v4()));
+        let install_result = (|| -> Result<(), String> {
+            let mut source = std::fs::File::open(&cli_source)
+                .map_err(|error| format!("open bundled UTP CLI: {error}"))?;
+            let mut destination = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+                .map_err(|error| format!("stage bundled UTP CLI: {error}"))?;
+            std::io::copy(&mut source, &mut destination)
+                .map_err(|error| format!("write bundled UTP CLI: {error}"))?;
+            set_resource_mode(&temporary, 0o700)?;
+            destination
+                .sync_all()
+                .map_err(|error| format!("sync bundled UTP CLI: {error}"))?;
+            std::fs::rename(&temporary, &target)
+                .map_err(|error| format!("install bundled UTP CLI: {error}"))
+        })();
+        if install_result.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        install_result?;
+    }
+
+    let skill_source = resource_dir.join("omp-profile-management").join("SKILL.md");
+    let skill_target = home
+        .join(".config")
+        .join("agents")
+        .join("skills")
+        .join("omp-profile-management");
+    let skill_file = skill_target.join("SKILL.md");
+    let target_is_symlink = std::fs::symlink_metadata(&skill_target)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(false);
+    if target_is_symlink {
+        return Err(format!("refusing to follow skill directory symlink {}", skill_target.display()));
+    }
+    if skill_source.is_file() && std::fs::symlink_metadata(&skill_file).is_err() {
+        std::fs::create_dir_all(&skill_target)
+            .map_err(|error| format!("create OMP profile skill directory: {error}"))?;
+        let temporary = skill_target.join(format!(".SKILL.{}.tmp", Uuid::new_v4()));
+        let install_result = (|| -> Result<(), String> {
+            let mut source = std::fs::File::open(&skill_source)
+                .map_err(|error| format!("open OMP profile skill: {error}"))?;
+            let mut destination = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+                .map_err(|error| format!("stage OMP profile skill: {error}"))?;
+            std::io::copy(&mut source, &mut destination)
+                .map_err(|error| format!("write OMP profile skill: {error}"))?;
+            set_resource_mode(&temporary, 0o600)?;
+            destination
+                .sync_all()
+                .map_err(|error| format!("sync OMP profile skill: {error}"))?;
+            match std::fs::hard_link(&temporary, &skill_file) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+                Err(error) => Err(format!("install OMP profile skill: {error}")),
+            }
+        })();
+        let _ = std::fs::remove_file(&temporary);
+        install_result?;
+    }
+    Ok(())
+}
+
+fn set_resource_mode(path: &Path, mode: u32) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+            .map_err(|error| format!("set resource permissions on {}: {error}", path.display()))?;
+    }
+    #[cfg(not(unix))]
+    let _ = (path, mode);
+    Ok(())
+}
+
 /// Gracefully relaunch UltraTerm. The current process exits normally, so the
 /// RunEvent::Exit handler detaches every terminal client while the tmux-backed
 /// sessions keep running; a detached helper waits for the process to die
@@ -1472,6 +1521,11 @@ pub fn run() {
             let telemetry = Arc::new(Mutex::new(TokenTelemetryManager::default()));
             let manager_for_cleanup = manager.clone();
             let home = home_dir().map_err(std::io::Error::other)?;
+            if let Ok(resource_dir) = app.path().resource_dir() {
+                if let Err(error) = install_user_resources(&home, &resource_dir) {
+                    eprintln!("[ultraterm] bundled resource install failed: {error}");
+                }
+            }
             let maintenance = Arc::new(MaintenanceManager::new(home));
 
             thread::spawn(move || cleanup_thread(cleanup_rx, manager_for_cleanup));
@@ -1498,6 +1552,9 @@ pub fn run() {
             detach_all_sessions,
             close_all_sessions,
             list_sessions,
+            list_omp_profiles,
+            create_omp_profile,
+            remove_omp_profile,
             list_persistent_slots,
             remove_persistent_slot,
             system_metrics,
@@ -1564,31 +1621,6 @@ pub fn run() {
 mod tests {
     use super::*;
 
-    #[test]
-    fn unload_decision_requires_removed_local_and_no_local_remaining() {
-        // Removed a local OMP session and nothing local remains → unload.
-        assert!(should_unload_local_model(true, std::iter::empty()));
-        assert!(should_unload_local_model(
-            true,
-            [(true, LaunchProfile::GptOnly)].into_iter()
-        ));
-        // A local OMP session is still attached → keep the model resident.
-        assert!(!should_unload_local_model(
-            true,
-            [(true, LaunchProfile::Local)].into_iter()
-        ));
-        // A plain shell on the local slot never launched OMP → does not count.
-        assert!(should_unload_local_model(
-            true,
-            [(false, LaunchProfile::Local)].into_iter()
-        ));
-        // The removed session was not local → never unload.
-        assert!(!should_unload_local_model(false, std::iter::empty()));
-        assert!(!should_unload_local_model(
-            false,
-            [(true, LaunchProfile::Local)].into_iter()
-        ));
-    }
 
     #[test]
     fn shell_escape_neutralizes_embedded_quotes() {
@@ -1644,81 +1676,35 @@ mod tests {
     }
 
     #[test]
-    fn launch_profile_contract_accepts_only_supported_values() {
-        assert_eq!(
-            serde_json::from_str::<LaunchProfile>("\"default\"").unwrap(),
-            LaunchProfile::Default
-        );
-        assert_eq!(
-            serde_json::from_str::<LaunchProfile>("\"gpt-only\"").unwrap(),
-            LaunchProfile::GptOnly
-        );
-        assert_eq!(
-            serde_json::from_str::<LaunchProfile>("\"kimi-k3\"").unwrap(),
-            LaunchProfile::KimiK3
-        );
-        assert_eq!(
-            serde_json::from_str::<LaunchProfile>("\"deepseek-v4-flash\"").unwrap(),
-            LaunchProfile::DeepseekV4Flash
-        );
-        assert_eq!(
-            serde_json::from_str::<LaunchProfile>("\"ox-alpha\"").unwrap(),
-            LaunchProfile::OxAlpha
-        );
-        assert_eq!(
-            serde_json::from_str::<LaunchProfile>("\"local\"").unwrap(),
-            LaunchProfile::Local
-        );
-        assert_eq!(
-            serde_json::to_string(&LaunchProfile::Default).unwrap(),
-            "\"default\""
-        );
-        assert_eq!(
-            serde_json::to_string(&LaunchProfile::GptOnly).unwrap(),
-            "\"gpt-only\""
-        );
-        assert_eq!(
-            serde_json::to_string(&LaunchProfile::KimiK3).unwrap(),
-            "\"kimi-k3\""
-        );
-        assert_eq!(
-            serde_json::to_string(&LaunchProfile::DeepseekV4Flash).unwrap(),
-            "\"deepseek-v4-flash\""
-        );
-        assert_eq!(
-            serde_json::to_string(&LaunchProfile::OxAlpha).unwrap(),
-            "\"ox-alpha\""
-        );
-        assert_eq!(
-            serde_json::to_string(&LaunchProfile::Local).unwrap(),
-            "\"local\""
-        );
-        assert!(serde_json::from_str::<LaunchProfile>("\"kimi\"").is_err());
-        assert!(serde_json::from_str::<LaunchProfile>("\"\"").is_err());
-    }
-
-    #[test]
-    fn launch_profiles_map_to_omp_profiles() {
-        assert_eq!(LaunchProfile::Default.omp_profile(), "lds");
-        assert_eq!(LaunchProfile::GptOnly.omp_profile(), "gpt-only");
-        assert_eq!(LaunchProfile::KimiK3.omp_profile(), "kimi-k3");
-        assert_eq!(
-            LaunchProfile::DeepseekV4Flash.omp_profile(),
-            "deepseek-v4-flash"
-        );
-        assert_eq!(LaunchProfile::OxAlpha.omp_profile(), "ox-alpha");
-        assert_eq!(LaunchProfile::Local.omp_profile(), "local");
-    }
-
-    #[test]
-    fn omitted_launch_profile_uses_default() {
+    fn launch_profile_wire_contract_preserves_arbitrary_strings_and_null_default() {
         let request: CreateSessionRequest = serde_json::from_value(serde_json::json!({
             "slot": 1,
             "cols": 80,
-            "rows": 24
+            "rows": 24,
+            "launchProfile": "team-a"
         }))
         .unwrap();
-        assert_eq!(request.launch_profile, LaunchProfile::Default);
+        assert_eq!(request.launch_profile.as_deref(), Some("team-a"));
+        let default_request: CreateSessionRequest = serde_json::from_value(serde_json::json!({
+            "slot": 1,
+            "cols": 80,
+            "rows": 24,
+            "launchProfile": null
+        }))
+        .unwrap();
+        assert_eq!(default_request.launch_profile, None);
+        assert_eq!(
+            serde_json::to_value(SessionInfo {
+                id: "id".to_string(),
+                slot: 1,
+                title: "Terminal".to_string(),
+                pid: 0,
+                launched_omp: true,
+                launch_profile: Some("any-profile".to_string()),
+            })
+            .unwrap()["launchProfile"],
+            "any-profile"
+        );
     }
 
     #[test]
@@ -1730,6 +1716,32 @@ mod tests {
                 "/Applications/UltraTerm.app/Contents/Resources/omp-safe"
             ))
         );
+    }
+
+    #[test]
+    fn installs_managed_cli_without_overwriting_user_skill() {
+        let home = tempfile::tempdir().unwrap();
+        let resources = tempfile::tempdir().unwrap();
+        std::fs::write(resources.path().join("utp"), "first cli").unwrap();
+        let bundled_skill = resources.path().join("omp-profile-management");
+        std::fs::create_dir(&bundled_skill).unwrap();
+        std::fs::write(bundled_skill.join("SKILL.md"), "bundled skill").unwrap();
+
+        install_user_resources(home.path(), resources.path()).unwrap();
+        let cli = home.path().join(".ultraterm/bin/utp");
+        let skill = home
+            .path()
+            .join(".config/agents/skills/omp-profile-management/SKILL.md");
+        assert_eq!(std::fs::read_to_string(&cli).unwrap(), "first cli");
+        assert_eq!(std::fs::read_to_string(&skill).unwrap(), "bundled skill");
+
+        std::fs::write(&skill, "user customization").unwrap();
+        std::fs::write(resources.path().join("utp"), "updated cli").unwrap();
+        std::fs::write(bundled_skill.join("SKILL.md"), "updated skill").unwrap();
+        install_user_resources(home.path(), resources.path()).unwrap();
+
+        assert_eq!(std::fs::read_to_string(cli).unwrap(), "updated cli");
+        assert_eq!(std::fs::read_to_string(skill).unwrap(), "user customization");
     }
 
     #[test]

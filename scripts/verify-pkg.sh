@@ -54,6 +54,9 @@ else
   EXPECTED_VERSION="$EXPECTED_VERSION" "${SCRIPT_DIR}/verify-app-identity.sh" "$APP_PATH"
 fi
 grep -Eq '^\./UltraTerm\.app/Contents/MacOS/ultraterm$' "$PAYLOAD_LIST"
+grep -Eq '^\./UltraTerm\.app/Contents/Resources/omp-safe$' "$PAYLOAD_LIST"
+grep -Eq '^\./UltraTerm\.app/Contents/Resources/utp$' "$PAYLOAD_LIST"
+grep -Eq '^\./UltraTerm\.app/Contents/Resources/omp-profile-management/SKILL\.md$' "$PAYLOAD_LIST"
 
 if [[ "${REQUIRE_SIGNED:-0}" == "1" ]]; then
   PKG_SIGNATURE="$(pkgutil --check-signature "$PKG_PATH" 2>&1)" || {
