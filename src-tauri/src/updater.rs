@@ -253,7 +253,7 @@ fn validate_app_bundle_name(app: &Path) -> Result<(), String> {
     }
 }
 
-fn verify_app_identity(app: &Path, expected_version: &str) -> Result<(), String> {
+fn verify_bundle_metadata(app: &Path, expected_version: &str) -> Result<(), String> {
     if !app.is_dir() {
         return Err(format!(
             "Expected an UltraTerm.app bundle at {}.",
@@ -282,6 +282,11 @@ fn verify_app_identity(app: &Path, expected_version: &str) -> Result<(), String>
             version.trim()
         ));
     }
+    Ok(())
+}
+
+fn verify_app_identity(app: &Path, expected_version: &str) -> Result<(), String> {
+    verify_bundle_metadata(app, expected_version)?;
     let app_arg = app.to_string_lossy().into_owned();
     run_checked(
         "/usr/bin/codesign",
@@ -317,7 +322,11 @@ pub async fn install_app_update(app: AppHandle) -> Result<(), String> {
         return Err("No newer stable UltraTerm release is available.".to_string());
     }
     let bundle = current_bundle()?;
-    verify_app_identity(&bundle, env!("CARGO_PKG_VERSION"))?;
+    // The running process cannot establish its own trust by self-verification.
+    // Validate its target metadata, then require the downloaded replacement to
+    // pass the full Developer ID, hardened-runtime, and notarization checks.
+    // This also lets ad-hoc development/legacy installs recover onto signed releases.
+    verify_bundle_metadata(&bundle, env!("CARGO_PKG_VERSION"))?;
     let staging = std::env::temp_dir().join(format!("ultraterm-update-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&staging).map_err(|error| format!("Failed to stage update: {error}"))?;
 
@@ -515,6 +524,29 @@ mod tests {
         let error = validate_app_bundle_name(Path::new("/tmp/Impostor.app")).unwrap_err();
         assert!(error.contains("bundle name"));
         assert!(validate_app_bundle_name(Path::new("/tmp/UltraTerm.app")).is_ok());
+    }
+
+    #[test]
+    fn current_bundle_metadata_does_not_require_a_signature() {
+        let root = tempfile::tempdir_in("/private/tmp").unwrap();
+        let app = root.path().join("UltraTerm.app");
+        let contents = app.join("Contents");
+        std::fs::create_dir_all(&contents).unwrap();
+        std::fs::write(
+            contents.join("Info.plist"),
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>{EXPECTED_BUNDLE_ID}</string>
+<key>CFBundleShortVersionString</key><string>{}</string>
+</dict></plist>"#,
+                env!("CARGO_PKG_VERSION")
+            ),
+        )
+        .unwrap();
+
+        assert!(verify_bundle_metadata(&app, env!("CARGO_PKG_VERSION")).is_ok());
     }
 
     #[test]
