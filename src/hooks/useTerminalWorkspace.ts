@@ -42,7 +42,7 @@ const DEFAULT_METRICS: MemorySnapshot = {
   appMemoryMib: 0,
   terminalMemoryMib: 0,
   sessionCount: 0,
-  maxSessions: 8,
+  maxSessions: 6,
 };
 const EMPTY_TOKEN_COUNTS = {
   input: 0,
@@ -209,7 +209,7 @@ export function appendCappedOutput(
   }
 }
 
-export function useTerminalWorkspace(sessionCap: number) {
+export function useTerminalWorkspace() {
   const [sessions, setSessions] = useState<WorkspaceSession[]>([]);
   const [metrics, setMetrics] = useState<MemorySnapshot>(DEFAULT_METRICS);
   const [telemetry, setTelemetry] = useState<TokenTelemetry>(DEFAULT_TOKEN_TELEMETRY);
@@ -410,15 +410,11 @@ export function useTerminalWorkspace(sessionCap: number) {
       ]);
       if (!active) return;
       if (memoryResult.status === "fulfilled") {
-        setMetrics({
-          ...memoryResult.value,
-          maxSessions: Math.min(memoryResult.value.maxSessions, sessionCap),
-        });
+        setMetrics(memoryResult.value);
       } else {
         setMetrics((current) => ({
           ...current,
           sessionCount: sessions.length,
-          maxSessions: Math.min(current.maxSessions, sessionCap),
         }));
       }
       if (tokenResult.status === "fulfilled") setTelemetry(tokenResult.value);
@@ -432,7 +428,7 @@ export function useTerminalWorkspace(sessionCap: number) {
       refreshMetricsRef.current = () => undefined;
       window.clearInterval(interval);
     };
-  }, [desktopRuntime, sessionCap, sessions.length]);
+  }, [desktopRuntime, sessions.length]);
 
   useEffect(() => {
     if (!desktopRuntime || !bootstrapped.current || isBooting) return;
@@ -517,6 +513,8 @@ export function useTerminalWorkspace(sessionCap: number) {
 
     try {
       await listenersReady.current;
+      const startupMetrics = await systemMetrics();
+      setMetrics(startupMetrics);
       const existing = await listSessions();
       if (existing.length > 0) {
         setSessions(existing.map((session) => ({
@@ -528,7 +526,7 @@ export function useTerminalWorkspace(sessionCap: number) {
       }
 
       const occupiedSlots = new Set(existing.map((session) => session.slot));
-      const savedRows = readTerminalLaunchRows(sessionCap);
+      const savedRows = readTerminalLaunchRows(startupMetrics.maxSessions);
       const persistentSlots = await listPersistentSlots();
       // Live tmux sessions are the source of truth: restore every one of them.
       // The display cap limits NEW panes only — filtering live slots here would
@@ -547,7 +545,7 @@ export function useTerminalWorkspace(sessionCap: number) {
       } else if (savedRows !== null) {
         rowsToRestore = savedRows;
       } else {
-        rowsToRestore = defaultTerminalSlots(targetCount, sessionCap).map((slot) => ({
+        rowsToRestore = defaultTerminalSlots(targetCount, startupMetrics.maxSessions).map((slot) => ({
           slot,
           launchProfile,
         }));
@@ -577,7 +575,7 @@ export function useTerminalWorkspace(sessionCap: number) {
     } finally {
       setIsBooting(false);
     }
-  }, [desktopRuntime, cleanupOrphanSlots, launchProfile, launchSlot, sessionCap]);
+  }, [desktopRuntime, cleanupOrphanSlots, launchProfile, launchSlot]);
 
   const addPane = useCallback(async (profile?: LaunchProfileId) => {
     if (addPaneInFlight.current) return;
@@ -595,7 +593,7 @@ export function useTerminalWorkspace(sessionCap: number) {
     }
 
     try {
-      const maxSessions = Math.min(sessionCap, metrics.maxSessions);
+      const maxSessions = metrics.maxSessions;
       if (sessions.length >= maxSessions) {
         setNotice(`UltraTerm is capped at ${maxSessions} live terminals on this display.`);
         return;
@@ -616,7 +614,7 @@ export function useTerminalWorkspace(sessionCap: number) {
       addPaneInFlight.current = false;
       setIsAddingPane(false);
     }
-  }, [launchProfile, launchSlot, metrics.maxSessions, sessionCap, sessions]);
+  }, [launchProfile, launchSlot, metrics.maxSessions, sessions]);
 
   const removePane = useCallback(async (id: string) => {
     const session = sessions.find((candidate) => candidate.id === id);

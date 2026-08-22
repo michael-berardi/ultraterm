@@ -48,6 +48,7 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 use telemetry::{TokenTelemetry, TokenTelemetryManager};
 use uuid::Uuid;
 
+/// Absolute session ceiling; slot validation always allows 1..=MAX_SESSION_SLOT.
 const MAX_SESSIONS: usize = 8;
 const MAX_COLS: u32 = 512;
 const MAX_ROWS: u32 = 512;
@@ -202,9 +203,67 @@ fn shutdown_session(session: &mut Session) -> Result<(), String> {
     Ok(())
 }
 
+/// Display-aware session caps: HD-class displays allow 6 concurrent sessions,
+/// while ultrawide monitors (aspect ratio >= 2.1, e.g. 3440x1440 or 2560x1080)
+/// stretch to the full 8. Scale factor cancels in the ratio, so physical pixels
+/// compare directly against the same threshold.
+const ULTRAWIDE_ASPECT_RATIO: f64 = 2.1;
+const STANDARD_SESSION_CAP: usize = 6;
+
+fn session_cap_for_monitor(width_px: u32, height_px: u32) -> usize {
+    if height_px > 0 && width_px as f64 / height_px as f64 >= ULTRAWIDE_ASPECT_RATIO {
+        MAX_SESSIONS
+    } else {
+        STANDARD_SESSION_CAP
+    }
+}
+
+/// Monitor the main window currently sits on, falling back to the primary.
+fn current_monitor_size(app: &AppHandle) -> Option<(u32, u32)> {
+    let window = app.get_webview_window("main")?;
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| app.primary_monitor().ok().flatten())?;
+    Some((monitor.size().width, monitor.size().height))
+}
+
+/// Count of live persistent tmux slots. The display cap never applies below
+/// this floor: sessions persist across relaunches and monitor changes, so a
+/// reattach onto a smaller display must still reach every surviving slot.
+fn live_persistent_slot_count() -> usize {
+    let Some(tmux) = telemetry::tmux_binary().ok().flatten() else {
+        return 0;
+    };
+    process::Command::new(tmux)
+        .args(["list-sessions", "-F", "#{session_name}"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| parse_persistent_slot_infos(&output.stdout).len())
+        .unwrap_or(0)
+}
+
+fn effective_session_cap(display_cap: usize, persistent_floor: usize, attached: usize) -> usize {
+    display_cap.max(persistent_floor).max(attached)
+}
+
+/// Recompute the authoritative cap without running subprocesses on the window
+/// event loop. The cached persistent floor is populated during setup, and the
+/// attached-session floor prevents a monitor move from stranding live panes.
+fn apply_session_cap(app: &AppHandle, manager: &mut SessionManager) {
+    let cap = current_monitor_size(app)
+        .map(|(width, height)| session_cap_for_monitor(width, height))
+        .unwrap_or(MAX_SESSIONS);
+    manager.max_sessions =
+        effective_session_cap(cap, manager.persistent_floor, manager.sessions.len());
+}
+
 struct SessionManager {
     sessions: HashMap<String, Session>,
     max_sessions: usize,
+    persistent_floor: usize,
     cleanup_tx: mpsc::Sender<String>,
 }
 
@@ -213,6 +272,7 @@ impl SessionManager {
         Self {
             sessions: HashMap::new(),
             max_sessions: MAX_SESSIONS,
+            persistent_floor: 0,
             cleanup_tx,
         }
     }
@@ -302,6 +362,14 @@ impl SessionManager {
             writer_handle: Some(writer_handle),
         };
         self.sessions.insert(id.clone(), session);
+        if launched_omp {
+            self.persistent_floor = self.persistent_floor.max(
+                self.sessions
+                    .values()
+                    .filter(|session| session.launched_omp)
+                    .count(),
+            );
+        }
 
         // Local profile: start the mtplx daemon in the background so the model
         // is serving by the first prompt. Never blocks session creation.
@@ -1394,7 +1462,13 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let (cleanup_tx, cleanup_rx) = mpsc::channel::<String>();
-            let manager = Arc::new(Mutex::new(SessionManager::new(cleanup_tx)));
+            // Resolve tmux once during setup; window-move handlers must never
+            // spawn a subprocess while holding the session-manager lock.
+            let persistent_floor = live_persistent_slot_count();
+            let mut session_manager = SessionManager::new(cleanup_tx);
+            session_manager.persistent_floor = persistent_floor;
+            apply_session_cap(app.handle(), &mut session_manager);
+            let manager = Arc::new(Mutex::new(session_manager));
             let telemetry = Arc::new(Mutex::new(TokenTelemetryManager::default()));
             let manager_for_cleanup = manager.clone();
             let home = home_dir().map_err(std::io::Error::other)?;
@@ -1448,6 +1522,23 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
+            if matches!(
+                &event,
+                RunEvent::WindowEvent {
+                    event: tauri::WindowEvent::Moved(_)
+                        | tauri::WindowEvent::ScaleFactorChanged { .. },
+                    ..
+                }
+            ) {
+                // The frontend polls system_metrics on an interval, so just
+                // refreshing the manager value keeps the New Terminal gate
+                // correct after the window moves between displays.
+                if let Some(manager) = app_handle.try_state::<Arc<Mutex<SessionManager>>>() {
+                    if let Ok(mut locked) = manager.lock() {
+                        apply_session_cap(app_handle, &mut locked);
+                    }
+                }
+            }
             if let RunEvent::Exit = event {
                 if let Err(error) =
                     tauri::async_runtime::block_on(ultravox_client::cancel_active_recording())
@@ -1727,6 +1818,28 @@ mod tests {
                 PathBuf::from("/bin"),
             ]
         );
+    }
+
+    #[test]
+    fn session_cap_follows_display_aspect_ratio() {
+        // HD-class displays: 1080p, 1440p, and standard-aspect 4K/5K stay at 6.
+        assert_eq!(session_cap_for_monitor(1920, 1080), 6);
+        assert_eq!(session_cap_for_monitor(2560, 1440), 6);
+        assert_eq!(session_cap_for_monitor(3840, 2160), 6);
+        assert_eq!(session_cap_for_monitor(5120, 2880), 6);
+        // Ultrawides at or above the 2.1 ratio reach the full cap. Scale
+        // factor cancels in the ratio, so physical pixels are fine.
+        assert_eq!(session_cap_for_monitor(3440, 1440), 8);
+        assert_eq!(session_cap_for_monitor(2560, 1080), 8);
+        assert_eq!(session_cap_for_monitor(5120, 2160), 8);
+    }
+
+    #[test]
+    fn session_cap_never_strands_persistent_or_attached_sessions() {
+        assert_eq!(effective_session_cap(6, 0, 0), 6);
+        assert_eq!(effective_session_cap(8, 0, 0), 8);
+        assert_eq!(effective_session_cap(6, 8, 0), 8);
+        assert_eq!(effective_session_cap(6, 0, 8), 8);
     }
 
     #[test]

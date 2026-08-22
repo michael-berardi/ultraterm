@@ -40,9 +40,6 @@ import {
 } from "./types";
 
 const DEFAULT_TERMINAL_COUNT = 3;
-const STANDARD_SESSION_CAP = 6;
-const ULTRAWIDE_SESSION_CAP = 8;
-const ULTRAWIDE_ASPECT_RATIO = 2.1;
 const SPACE_HOLD_MILLISECONDS = 700;
 const WINDOW_GEOMETRY_STORAGE_KEY = "ultraterm.window-geometry";
 const WINDOW_GEOMETRY_SAVE_DELAY_MILLISECONDS = 150;
@@ -194,12 +191,6 @@ function useWindowGeometryPersistence(): void {
 }
 
 
-function displaySessionCap(): number {
-  const { width, height } = window.screen;
-  return width / Math.max(height, 1) >= ULTRAWIDE_ASPECT_RATIO
-    ? ULTRAWIDE_SESSION_CAP
-    : STANDARD_SESSION_CAP;
-}
 
 function paneGrid(count: number): { columns: number; rows: number } {
   if (count <= 1) return { columns: 1, rows: 1 };
@@ -286,8 +277,7 @@ function withTimeout<T>(
 
 function App(): ReactElement {
   useWindowGeometryPersistence();
-  const [sessionCap, setSessionCap] = useState(displaySessionCap);
-  const workspace = useTerminalWorkspace(sessionCap);
+  const workspace = useTerminalWorkspace();
   const [activeId, setActiveId] = useState<string | null>(null);
   const activeIdRef = useRef<string | null>(activeId);
   activeIdRef.current = activeId;
@@ -512,15 +502,6 @@ function App(): ReactElement {
     };
   }, []);
 
-  useEffect(() => {
-    const refreshSessionCap = () => setSessionCap(displaySessionCap());
-    window.addEventListener("focus", refreshSessionCap);
-    window.addEventListener("resize", refreshSessionCap);
-    return () => {
-      window.removeEventListener("focus", refreshSessionCap);
-      window.removeEventListener("resize", refreshSessionCap);
-    };
-  }, []);
 
   const [bootStarted, setBootStarted] = useState(false);
   const [splash, setSplash] = useState<"visible" | "exiting" | "gone">("visible");
