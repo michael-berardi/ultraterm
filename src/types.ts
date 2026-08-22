@@ -28,7 +28,7 @@ export const DEFAULT_PROVIDER_USAGE_PREFERENCES: Readonly<ProviderUsagePreferenc
 export type SessionStatus = "connecting" | "live" | "exited" | "error";
 export type SessionActivity = "idle" | "working";
 
-export type LaunchProfileId = "default" | "gpt-only" | "kimi-k3" | "deepseek-v4-flash" | "local";
+export type LaunchProfileId = "default" | "gpt-only" | "kimi-k3" | "deepseek-v4-flash" | "ox-alpha" | "local";
 
 export interface LaunchProfileOption {
   id: LaunchProfileId;
@@ -46,6 +46,11 @@ export const LAUNCH_PROFILE_OPTIONS: ReadonlyArray<LaunchProfileOption> = [
     description: "Launch an all-DeepSeek V4 Flash OMP profile",
   },
   {
+    id: "ox-alpha",
+    label: "Ox Alpha",
+    description: "Launch an all-Ox Alpha OMP profile (free OpenRouter stealth model)",
+  },
+  {
     id: "local",
     label: "Local",
     description: "Launch the OverSeer Qwen 3.8 27B MTP model through the local MTPLX server; the server starts on open and stops when the last local terminal closes",
@@ -57,6 +62,7 @@ export function isLaunchProfileId(value: unknown): value is LaunchProfileId {
     || value === "gpt-only"
     || value === "kimi-k3"
     || value === "deepseek-v4-flash"
+    || value === "ox-alpha"
     || value === "local";
 }
 
